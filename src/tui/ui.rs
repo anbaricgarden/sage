@@ -11,6 +11,7 @@ use ratatui::{
 
 use super::app::{App, LogLevel, Screen, StatusKind};
 use super::events::{byte_index_to_visual_pos, wrap_text};
+use super::file_tree::build_visible_tree;
 use crate::agent::orchestrator::OrchestratorState;
 
 // ── Palette ──
@@ -407,7 +408,7 @@ fn render_files(frame: &mut Frame, app: &mut App, area: Rect) {
         .constraints([Constraint::Percentage(30), Constraint::Percentage(70)])
         .split(area);
 
-    // File tree.
+    // File tree panel.
     let tree_block = Block::default()
         .title(" Files ")
         .title_style(Style::default().fg(ACCENT).add_modifier(Modifier::BOLD))
@@ -415,35 +416,87 @@ fn render_files(frame: &mut Frame, app: &mut App, area: Rect) {
         .border_style(Style::default().fg(BORDER));
     let tree_inner = chunks[0].inner(Margin::new(1, 1));
     frame.render_widget(tree_block, chunks[0]);
-    app.file_tree_rect = Some(tree_inner);
 
-    let mut files: Vec<String> = app.orchestrator.file_contents.keys().cloned().collect();
-    files.sort();
+    // Split tree panel into filter box + list.
+    let inner_layout = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Length(3), Constraint::Min(0)])
+        .split(tree_inner);
 
-    let tree_items: Vec<ListItem> = files
+    let filter_area = inner_layout[0];
+    let list_area = inner_layout[1];
+
+    // Filter input.
+    let filter_block = Block::default()
+        .title(" Filter ")
+        .title_style(Style::default().fg(ACCENT))
+        .borders(Borders::ALL)
+        .border_style(if app.file_filter_focused {
+            Style::default().fg(BORDER_ACTIVE)
+        } else {
+            Style::default().fg(BORDER)
+        });
+    let filter_inner = filter_area.inner(Margin::new(1, 1));
+    app.file_filter_rect = Some(filter_inner);
+    frame.render_widget(filter_block, filter_area);
+
+    let filter_text = if app.file_filter.is_empty() && !app.file_filter_focused {
+        Line::from(Span::styled("Search files... (press /)", Style::default().fg(TEXT_MUTED)))
+    } else {
+        Line::from(Span::styled(&app.file_filter, Style::default().fg(TEXT)))
+    };
+    frame.render_widget(Paragraph::new(filter_text), filter_inner);
+
+    if app.file_filter_focused {
+        let cursor_x = filter_inner.x + app.file_filter_cursor as u16;
+        let cursor_y = filter_inner.y;
+        frame.set_cursor_position(Position::new(cursor_x, cursor_y));
+    }
+
+    // File tree list.
+    app.file_tree_rect = Some(list_area);
+
+    let paths: Vec<String> = app.orchestrator.file_contents.keys().cloned().collect();
+    let visible = build_visible_tree(&paths, &app.expanded_dirs, &app.file_filter);
+
+    let tree_items: Vec<ListItem> = visible
         .iter()
         .enumerate()
-        .map(|(i, path)| {
-            let is_selected = app.selected_file.as_ref() == Some(path);
+        .map(|(i, entry)| {
+            let is_selected = app.selected_file.as_ref() == Some(&entry.path);
             let is_hovered = app.file_hover == Some(i);
+            let is_cursor = i == app.file_scroll;
             let style = if is_selected {
                 Style::default().fg(ACCENT_BRIGHT).bg(SURFACE).add_modifier(Modifier::BOLD)
             } else if is_hovered {
                 Style::default().fg(TEXT).bg(SURFACE_HOVER)
+            } else if is_cursor {
+                Style::default().fg(TEXT).bg(SURFACE)
             } else {
                 Style::default().fg(TEXT_SECONDARY)
             };
-            let prefix = if is_selected { "▸ " } else { "  " };
-            ListItem::new(Line::from(Span::styled(format!("{}{}", prefix, path), style)))
+
+            let indent = "  ".repeat(entry.depth);
+            let prefix = if entry.is_dir {
+                if entry.is_expanded { "▼ " } else { "▶ " }
+            } else if is_selected {
+                "▸ "
+            } else {
+                "  "
+            };
+
+            let text = format!("{}{}{}", indent, prefix, entry.name);
+            ListItem::new(Line::from(Span::styled(text, style)))
         })
         .collect();
 
     let tree = List::new(tree_items).block(Block::default());
-    frame.render_widget(tree, tree_inner);
+    frame.render_widget(tree, list_area);
 
     // Content viewer.
+    let selected_title = app.selected_file.as_deref().unwrap_or("Content");
     let content_block = Block::default()
-        .title(" Content ")
+        .title(format!(" {} ", selected_title))
         .title_style(Style::default().fg(ACCENT).add_modifier(Modifier::BOLD))
         .borders(Borders::ALL)
         .border_style(Style::default().fg(BORDER));

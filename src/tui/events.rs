@@ -1,6 +1,7 @@
 use crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers, MouseEventKind};
 
 use super::app::{App, Screen};
+use super::file_tree::build_visible_tree;
 
 // ── Text wrapping & cursor utilities ──
 
@@ -407,25 +408,104 @@ fn handle_settings_keys(app: &mut App, code: KeyCode) {
 }
 
 fn handle_file_keys(app: &mut App, code: KeyCode) {
-    let mut files: Vec<String> = app.orchestrator.file_contents.keys().cloned().collect();
-    if files.is_empty() {
+    if app.file_filter_focused {
+        handle_file_filter_keys(app, code);
         return;
     }
-    files.sort();
 
-    // Ensure file_scroll is in bounds before indexing.
-    app.file_scroll = app.file_scroll.min(files.len().saturating_sub(1));
+    let paths: Vec<String> = app.orchestrator.file_contents.keys().cloned().collect();
+    let visible = build_visible_tree(&paths, &app.expanded_dirs, &app.file_filter);
+    if visible.is_empty() {
+        return;
+    }
+    app.file_scroll = app.file_scroll.min(visible.len().saturating_sub(1));
 
     match code {
         KeyCode::Up | KeyCode::Char('k') => {
             app.file_scroll = app.file_scroll.saturating_sub(1);
-            app.selected_file = Some(files[app.file_scroll].clone());
+            if let Some(entry) = visible.get(app.file_scroll) && !entry.is_dir {
+                app.selected_file = Some(entry.path.clone());
+            }
         }
         KeyCode::Down | KeyCode::Char('j') => {
-            app.file_scroll = (app.file_scroll + 1).min(files.len().saturating_sub(1));
-            app.selected_file = Some(files[app.file_scroll].clone());
+            app.file_scroll = (app.file_scroll + 1).min(visible.len().saturating_sub(1));
+            if let Some(entry) = visible.get(app.file_scroll) && !entry.is_dir {
+                app.selected_file = Some(entry.path.clone());
+            }
+        }
+        KeyCode::Left | KeyCode::Char('h') => {
+            if let Some(entry) = visible.get(app.file_scroll) && entry.is_dir && entry.is_expanded {
+                app.expanded_dirs.remove(&entry.path);
+            }
+        }
+        KeyCode::Right | KeyCode::Char('l') => {
+            if let Some(entry) = visible.get(app.file_scroll) && entry.is_dir && !entry.is_expanded {
+                app.expanded_dirs.insert(entry.path.clone());
+            }
+        }
+        KeyCode::Enter => {
+            if let Some(entry) = visible.get(app.file_scroll) {
+                if entry.is_dir {
+                    if entry.is_expanded {
+                        app.expanded_dirs.remove(&entry.path);
+                    } else {
+                        app.expanded_dirs.insert(entry.path.clone());
+                    }
+                } else {
+                    app.selected_file = Some(entry.path.clone());
+                }
+            }
+        }
+        KeyCode::Char('/') => {
+            app.file_filter_focused = true;
         }
         _ => {}
+    }
+}
+
+fn handle_file_filter_keys(app: &mut App, code: KeyCode) {
+    match code {
+        KeyCode::Char(c) => {
+            let pos = app.file_filter_cursor.min(app.file_filter.len());
+            app.file_filter.insert(pos, c);
+            app.file_filter_cursor = (pos + c.len_utf8()).min(app.file_filter.len());
+        }
+        KeyCode::Backspace => {
+            if app.file_filter_cursor > 0 {
+                let prev = prev_char_boundary(&app.file_filter, app.file_filter_cursor);
+                app.file_filter.replace_range(prev..app.file_filter_cursor, "");
+                app.file_filter_cursor = prev;
+            }
+        }
+        KeyCode::Delete => {
+            let next = next_char_boundary(&app.file_filter, app.file_filter_cursor);
+            app.file_filter.replace_range(app.file_filter_cursor..next, "");
+        }
+        KeyCode::Left => {
+            app.file_filter_cursor = prev_char_boundary(&app.file_filter, app.file_filter_cursor);
+        }
+        KeyCode::Right => {
+            app.file_filter_cursor = next_char_boundary(&app.file_filter, app.file_filter_cursor);
+        }
+        KeyCode::Home => app.file_filter_cursor = 0,
+        KeyCode::End => app.file_filter_cursor = app.file_filter.len(),
+        KeyCode::Esc => {
+            app.file_filter_focused = false;
+            app.file_filter.clear();
+            app.file_filter_cursor = 0;
+        }
+        KeyCode::Enter => {
+            app.file_filter_focused = false;
+        }
+        _ => {}
+    }
+
+    // Re-clamp scroll after filter changes.
+    let paths: Vec<String> = app.orchestrator.file_contents.keys().cloned().collect();
+    let visible = build_visible_tree(&paths, &app.expanded_dirs, &app.file_filter);
+    app.file_scroll = app.file_scroll.min(visible.len().saturating_sub(1));
+    if let Some(entry) = visible.get(app.file_scroll) && !entry.is_dir {
+        app.selected_file = Some(entry.path.clone());
     }
 }
 
@@ -453,12 +533,26 @@ fn handle_mouse(app: &mut App, kind: MouseEventKind, col: u16, row: u16) {
             } else if app.screen == Screen::Files && in_file_tree {
                 let rect = app.file_tree_rect.unwrap();
                 let idx = (row as usize).saturating_sub(rect.y as usize);
-                let mut files: Vec<String> = app.orchestrator.file_contents.keys().cloned().collect();
-                files.sort();
-                if idx < files.len() {
+                let paths: Vec<String> = app.orchestrator.file_contents.keys().cloned().collect();
+                let visible = build_visible_tree(&paths, &app.expanded_dirs, &app.file_filter);
+                if idx < visible.len() {
                     app.file_scroll = idx;
-                    app.selected_file = Some(files[idx].clone());
+                    let entry = &visible[idx];
+                    if entry.is_dir {
+                        if entry.is_expanded {
+                            app.expanded_dirs.remove(&entry.path);
+                        } else {
+                            app.expanded_dirs.insert(entry.path.clone());
+                        }
+                    } else {
+                        app.selected_file = Some(entry.path.clone());
+                    }
                 }
+            } else if app.screen == Screen::Files && app.file_filter_rect.is_some_and(|r| contains(r, col, row)) {
+                app.file_filter_focused = true;
+                let rect = app.file_filter_rect.unwrap();
+                let click_col = col.saturating_sub(rect.x) as usize;
+                app.file_filter_cursor = click_col.min(app.file_filter.len());
             } else if app.screen == Screen::Task && in_task_input {
                 let rect = app.task_input_rect.unwrap();
                 app.task_input_focused = true;
@@ -505,9 +599,9 @@ fn handle_mouse(app: &mut App, kind: MouseEventKind, col: u16, row: u16) {
             } else if app.screen == Screen::Files && in_file_tree {
                 let rect = app.file_tree_rect.unwrap();
                 let idx = (row as usize).saturating_sub(rect.y as usize);
-                let mut files: Vec<String> = app.orchestrator.file_contents.keys().cloned().collect();
-                files.sort();
-                if idx < files.len() {
+                let paths: Vec<String> = app.orchestrator.file_contents.keys().cloned().collect();
+                let visible = build_visible_tree(&paths, &app.expanded_dirs, &app.file_filter);
+                if idx < visible.len() {
                     app.file_hover = Some(idx);
                 }
             } else if app.screen == Screen::Settings && in_settings {
@@ -523,11 +617,13 @@ fn handle_mouse(app: &mut App, kind: MouseEventKind, col: u16, row: u16) {
             if app.screen == Screen::Logs {
                 app.log_scroll = app.log_scroll.saturating_sub(3);
             } else if app.screen == Screen::Files {
-                let mut files: Vec<String> = app.orchestrator.file_contents.keys().cloned().collect();
-                files.sort();
-                if app.file_scroll > 0 {
+                let paths: Vec<String> = app.orchestrator.file_contents.keys().cloned().collect();
+                let visible = build_visible_tree(&paths, &app.expanded_dirs, &app.file_filter);
+                if !visible.is_empty() && app.file_scroll > 0 {
                     app.file_scroll -= 1;
-                    app.selected_file = Some(files[app.file_scroll].clone());
+                    if let Some(entry) = visible.get(app.file_scroll) && !entry.is_dir {
+                        app.selected_file = Some(entry.path.clone());
+                    }
                 }
             }
         }
@@ -535,11 +631,13 @@ fn handle_mouse(app: &mut App, kind: MouseEventKind, col: u16, row: u16) {
             if app.screen == Screen::Logs {
                 app.log_scroll = (app.log_scroll + 3).min(app.logs.len().saturating_sub(1));
             } else if app.screen == Screen::Files {
-                let mut files: Vec<String> = app.orchestrator.file_contents.keys().cloned().collect();
-                files.sort();
-                if app.file_scroll + 1 < files.len() {
+                let paths: Vec<String> = app.orchestrator.file_contents.keys().cloned().collect();
+                let visible = build_visible_tree(&paths, &app.expanded_dirs, &app.file_filter);
+                if app.file_scroll + 1 < visible.len() {
                     app.file_scroll += 1;
-                    app.selected_file = Some(files[app.file_scroll].clone());
+                    if let Some(entry) = visible.get(app.file_scroll) && !entry.is_dir {
+                        app.selected_file = Some(entry.path.clone());
+                    }
                 }
             }
         }

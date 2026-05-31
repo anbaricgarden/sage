@@ -1,4 +1,4 @@
-use std::collections::VecDeque;
+use std::collections::{HashSet, VecDeque};
 
 use ratatui::layout::Rect;
 
@@ -98,6 +98,12 @@ pub struct App {
     pub file_tree_rect: Option<Rect>,
     pub task_input_rect: Option<Rect>,
     pub log_area_rect: Option<Rect>,
+    // ── File tree ──
+    pub expanded_dirs: HashSet<String>,
+    pub file_filter: String,
+    pub file_filter_focused: bool,
+    pub file_filter_cursor: usize,
+    pub file_filter_rect: Option<Rect>,
     // ── Settings ──
     pub settings_cursor: usize,
     pub settings_hover: Option<usize>,
@@ -169,6 +175,11 @@ impl App {
             file_tree_rect: None,
             task_input_rect: None,
             log_area_rect: None,
+            expanded_dirs: HashSet::new(),
+            file_filter: String::new(),
+            file_filter_focused: false,
+            file_filter_cursor: 0,
+            file_filter_rect: None,
             settings_cursor: 0,
             settings_hover: None,
             settings_rect: None,
