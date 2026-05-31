@@ -271,7 +271,7 @@ pub fn handle_event(app: &mut App) -> std::io::Result<bool> {
             }
         }
         Event::Mouse(mouse) => {
-            handle_mouse(app, mouse.kind, mouse.column, mouse.row);
+            handle_mouse(app, mouse.kind, mouse.column, mouse.row, mouse.modifiers);
         }
         Event::Resize(_, _) => {}
         _ => {}
@@ -974,7 +974,7 @@ fn contains(rect: ratatui::layout::Rect, col: u16, row: u16) -> bool {
     rect.x <= col && col < rect.x + rect.width && rect.y <= row && row < rect.y + rect.height
 }
 
-fn handle_mouse(app: &mut App, kind: MouseEventKind, col: u16, row: u16) {
+fn handle_mouse(app: &mut App, kind: MouseEventKind, col: u16, row: u16, modifiers: KeyModifiers) {
     let in_sidebar = app.sidebar_rect.is_some_and(|r| contains(r, col, row));
     let in_file_tree = app.file_tree_rect.is_some_and(|r| contains(r, col, row));
     let in_task_input = app.task_input_rect.is_some_and(|r| contains(r, col, row));
@@ -984,7 +984,7 @@ fn handle_mouse(app: &mut App, kind: MouseEventKind, col: u16, row: u16) {
 
     match kind {
         MouseEventKind::Down(_) => {
-            handle_mouse_down(app, col, row, in_sidebar, in_file_tree, in_task_input, in_settings, in_result, in_file_content);
+            handle_mouse_down(app, col, row, in_sidebar, in_file_tree, in_task_input, in_settings, in_result, in_file_content, modifiers);
         }
         MouseEventKind::Drag(_) => {
             handle_mouse_drag(app, col, row);
@@ -1017,6 +1017,7 @@ fn handle_mouse_down(
     in_settings: bool,
     in_result: bool,
     in_file_content: bool,
+    modifiers: KeyModifiers,
 ) {
     // Cancel any pending deferred copy when the user clicks again.
     app.copy_defer_ticks = 0;
@@ -1025,7 +1026,7 @@ fn handle_mouse_down(
     let clicks = update_click_tracking(app, col, row);
 
     // Start a new selection if clicking inside a text area.
-    let started_selection = start_text_selection(app, col, row, clicks, in_task_input, in_result, in_file_content);
+    let started_selection = start_text_selection(app, col, row, clicks, in_task_input, in_result, in_file_content, modifiers);
 
     if !started_selection {
         // Click outside any text area: clear selection.
@@ -1079,7 +1080,44 @@ fn handle_mouse_down(
     }
 }
 
+/// Compute selection bounds for a mouse click, extending from an existing anchor when Shift is held.
+#[allow(clippy::too_many_arguments)]
+fn selection_bounds_for_click(
+    app: &App,
+    source: SelectionSource,
+    text: &str,
+    idx: usize,
+    width: u16,
+    clicks: u8,
+    shift: bool,
+    fallback_anchor: usize,
+) -> (usize, usize) {
+    if !shift {
+        return select_range(text, idx, width, clicks);
+    }
+    if let Some(sel) = app.selection.as_ref().filter(|s| s.source == source) {
+        let anchor = sel.start;
+        let end = match clicks {
+            3 => {
+                let (line_start, line_end) = select_wrapped_line(text, idx, width);
+                if anchor <= idx { line_end } else { line_start }
+            }
+            2 => {
+                let (word_start, word_end) = select_word(text, idx);
+                if anchor <= idx { word_end } else { word_start }
+            }
+            _ => idx,
+        };
+        (anchor, end)
+    } else {
+        // No existing selection of this source: extend from fallback anchor.
+        let (_, end) = select_range(text, idx, width, clicks);
+        (fallback_anchor, end)
+    }
+}
+
 /// Start a text selection on mouse down. Returns true if a selection was started.
+#[allow(clippy::too_many_arguments)]
 fn start_text_selection(
     app: &mut App,
     col: u16,
@@ -1088,11 +1126,15 @@ fn start_text_selection(
     in_task_input: bool,
     in_result: bool,
     in_file_content: bool,
+    modifiers: KeyModifiers,
 ) -> bool {
+    let shift = modifiers.contains(KeyModifiers::SHIFT);
     if app.screen == Screen::Task && in_task_input {
         let rect = app.task_input_rect.unwrap();
         let idx = byte_index_at_click(&app.task_input, rect, app.task_scroll, col, row);
-        let (start, end) = select_range(&app.task_input, idx, rect.width, clicks);
+        let (start, end) = selection_bounds_for_click(
+            app, SelectionSource::TaskInput, &app.task_input, idx, rect.width, clicks, shift, app.task_cursor,
+        );
         app.selection = Some(TextSelection {
             source: SelectionSource::TaskInput,
             start,
@@ -1107,7 +1149,9 @@ fn start_text_selection(
     if app.screen == Screen::Task && in_result && let Some(result) = &app.last_result {
         let rect = app.result_rect.unwrap();
         let idx = byte_index_at_click(result, rect, app.result_scroll, col, row);
-        let (start, end) = select_range(result, idx, rect.width, clicks);
+        let (start, end) = selection_bounds_for_click(
+            app, SelectionSource::Result, result, idx, rect.width, clicks, shift, 0,
+        );
         app.selection = Some(TextSelection {
             source: SelectionSource::Result,
             start,
@@ -1120,7 +1164,9 @@ fn start_text_selection(
     if app.screen == Screen::Files && in_file_content && let Some(content) = app.selected_file.as_ref().and_then(|f| app.orchestrator.file_contents.get(f)) {
         let rect = app.file_content_rect.unwrap();
         let idx = byte_index_at_click(content, rect, app.file_content_scroll, col, row);
-        let (start, end) = select_range(content, idx, rect.width, clicks);
+        let (start, end) = selection_bounds_for_click(
+            app, SelectionSource::FileContent, content, idx, rect.width, clicks, shift, 0,
+        );
         app.selection = Some(TextSelection {
             source: SelectionSource::FileContent,
             start,
@@ -1134,12 +1180,33 @@ fn start_text_selection(
         let rect = app.file_filter_rect.unwrap();
         let click_col = col.saturating_sub(rect.x) as usize;
         let idx = click_col.min(app.file_filter.len());
-        let (start, end) = if clicks == 3 {
-            (0, app.file_filter.len())
-        } else if clicks == 2 {
-            select_word(&app.file_filter, idx)
+        let (start, end) = if shift && app.selection.as_ref().is_some_and(|s| s.source == SelectionSource::FileFilter) {
+            let anchor = app.selection.as_ref().unwrap().start;
+            let end = match clicks {
+                3 => if anchor <= idx { app.file_filter.len() } else { 0 },
+                2 => {
+                    let (word_start, word_end) = select_word(&app.file_filter, idx);
+                    if anchor <= idx { word_end } else { word_start }
+                }
+                _ => idx,
+            };
+            (anchor, end)
+        } else if shift {
+            let end = match clicks {
+                3 => if app.file_filter_cursor <= idx { app.file_filter.len() } else { 0 },
+                2 => {
+                    let (word_start, word_end) = select_word(&app.file_filter, idx);
+                    if app.file_filter_cursor <= idx { word_end } else { word_start }
+                }
+                _ => idx,
+            };
+            (app.file_filter_cursor, end)
         } else {
-            (idx, idx)
+            match clicks {
+                3 => (0, app.file_filter.len()),
+                2 => select_word(&app.file_filter, idx),
+                _ => (idx, idx),
+            }
         };
         app.selection = Some(TextSelection {
             source: SelectionSource::FileFilter,
@@ -1609,10 +1676,162 @@ mod tests {
         app.pending_copy_source = Some(SelectionSource::Result);
 
         // Simulate a click outside all text areas (no rects set)
-        handle_mouse_down(&mut app, 0, 0, false, false, false, false, false, false);
+        handle_mouse_down(&mut app, 0, 0, false, false, false, false, false, false, KeyModifiers::empty());
 
         assert_eq!(app.copy_defer_ticks, 0);
         assert!(app.pending_copy_source.is_none());
+    }
+
+    // -------------------------------------------------------------------------
+    // Shift+Click selection extension
+    // -------------------------------------------------------------------------
+
+    #[test]
+    fn shift_click_extends_task_selection_forward() {
+        let mut app = App::new();
+        app.task_input = "hello world foo bar".to_string();
+        app.task_input_rect = Some(ratatui::layout::Rect::new(0, 0, 40, 10));
+        app.screen = Screen::Task;
+
+        // First click at byte 0, double-click to select "hello" (0..5)
+        let modifiers = KeyModifiers::empty();
+        let started = start_text_selection(&mut app, 0, 0, 2, true, false, false, modifiers);
+        assert!(started);
+        assert_eq!(app.selection.as_ref().unwrap().start, 0);
+        assert_eq!(app.selection.as_ref().unwrap().end, 5);
+
+        // Shift+click at byte 12 (col 12 maps to byte 12 for ASCII single-line)
+        let shift = KeyModifiers::SHIFT;
+        let started = start_text_selection(&mut app, 12, 0, 1, true, false, false, shift);
+        assert!(started);
+        let sel = app.selection.as_ref().unwrap();
+        assert_eq!(sel.source, SelectionSource::TaskInput);
+        assert_eq!(sel.start, 0); // anchor preserved
+        assert_eq!(sel.end, 12);  // extended to click position
+    }
+
+    #[test]
+    fn shift_click_extends_task_selection_backward() {
+        let mut app = App::new();
+        app.task_input = "hello world foo bar".to_string();
+        app.task_input_rect = Some(ratatui::layout::Rect::new(0, 0, 40, 10));
+        app.screen = Screen::Task;
+
+        // First click at byte 16, double-click to select "bar" (16..19)
+        let modifiers = KeyModifiers::empty();
+        start_text_selection(&mut app, 16, 0, 2, true, false, false, modifiers);
+        let anchor = app.selection.as_ref().unwrap().start;
+
+        // Shift+click at byte 0 to extend backward
+        let shift = KeyModifiers::SHIFT;
+        let started = start_text_selection(&mut app, 0, 0, 1, true, false, false, shift);
+        assert!(started);
+        let sel = app.selection.as_ref().unwrap();
+        assert_eq!(sel.start, anchor); // anchor preserved
+        assert_eq!(sel.end, 0);         // extended backward to click position
+    }
+
+    #[test]
+    fn shift_double_click_extends_by_word_forward() {
+        let mut app = App::new();
+        app.task_input = "hello world foo bar".to_string();
+        app.task_input_rect = Some(ratatui::layout::Rect::new(0, 0, 40, 10));
+        app.screen = Screen::Task;
+
+        // Single click at byte 0 creates zero-width selection (0,0)
+        let modifiers = KeyModifiers::empty();
+        start_text_selection(&mut app, 0, 0, 1, true, false, false, modifiers);
+
+        // Shift+double-click at byte 12 extends to word "foo" (12..15)
+        let shift = KeyModifiers::SHIFT;
+        let started = start_text_selection(&mut app, 12, 0, 2, true, false, false, shift);
+        assert!(started);
+        let sel = app.selection.as_ref().unwrap();
+        assert_eq!(sel.start, 0);
+        assert_eq!(sel.end, 15); // "foo" ends at byte 15
+    }
+
+    #[test]
+    fn shift_double_click_extends_by_word_backward() {
+        let mut app = App::new();
+        app.task_input = "hello world foo bar".to_string();
+        app.task_input_rect = Some(ratatui::layout::Rect::new(0, 0, 40, 10));
+        app.screen = Screen::Task;
+
+        // Double-click at byte 16 to select "bar" (16..19)
+        let modifiers = KeyModifiers::empty();
+        start_text_selection(&mut app, 16, 0, 2, true, false, false, modifiers);
+        let anchor = app.selection.as_ref().unwrap().start;
+
+        // Shift+double-click at byte 0 extends backward to "hello" start
+        let shift = KeyModifiers::SHIFT;
+        let started = start_text_selection(&mut app, 0, 0, 2, true, false, false, shift);
+        assert!(started);
+        let sel = app.selection.as_ref().unwrap();
+        assert_eq!(sel.start, anchor);
+        assert_eq!(sel.end, 0); // "hello" starts at 0
+    }
+
+    #[test]
+    fn shift_click_no_selection_uses_cursor_as_anchor() {
+        let mut app = App::new();
+        app.task_input = "hello world foo bar".to_string();
+        app.task_input_rect = Some(ratatui::layout::Rect::new(0, 0, 40, 10));
+        app.screen = Screen::Task;
+        app.task_cursor = 6; // cursor at "world"
+        app.selection = None;
+
+        // Shift+click at byte 12
+        let shift = KeyModifiers::SHIFT;
+        let started = start_text_selection(&mut app, 12, 0, 1, true, false, false, shift);
+        assert!(started);
+        let sel = app.selection.as_ref().unwrap();
+        assert_eq!(sel.start, 6); // cursor as anchor
+        assert_eq!(sel.end, 12); // click position
+    }
+
+    #[test]
+    fn shift_click_different_source_creates_new_selection() {
+        let mut app = App::new();
+        app.task_input = "hello world".to_string();
+        app.last_result = Some("result text here".to_string());
+        app.task_input_rect = Some(ratatui::layout::Rect::new(0, 0, 40, 10));
+        app.result_rect = Some(ratatui::layout::Rect::new(0, 0, 40, 10));
+        app.screen = Screen::Task;
+
+        // Create selection in task input
+        let modifiers = KeyModifiers::empty();
+        start_text_selection(&mut app, 0, 0, 1, true, false, false, modifiers);
+        assert_eq!(app.selection.as_ref().unwrap().source, SelectionSource::TaskInput);
+
+        // Shift+click in result area should create a new selection, not extend task input
+        let shift = KeyModifiers::SHIFT;
+        let started = start_text_selection(&mut app, 0, 0, 1, false, true, false, shift);
+        assert!(started);
+        let sel = app.selection.as_ref().unwrap();
+        assert_eq!(sel.source, SelectionSource::Result);
+    }
+
+    #[test]
+    fn shift_click_result_area_extends_from_anchor() {
+        let mut app = App::new();
+        app.last_result = Some("hello world foo bar".to_string());
+        app.result_rect = Some(ratatui::layout::Rect::new(0, 0, 40, 10));
+        app.screen = Screen::Task;
+
+        // Create selection in result area (double-click at byte 0 selects "hello" 0..5)
+        let modifiers = KeyModifiers::empty();
+        start_text_selection(&mut app, 0, 0, 2, false, true, false, modifiers);
+        let anchor = app.selection.as_ref().unwrap().start;
+
+        // Shift+click at byte 12 to extend
+        let shift = KeyModifiers::SHIFT;
+        let started = start_text_selection(&mut app, 12, 0, 1, false, true, false, shift);
+        assert!(started);
+        let sel = app.selection.as_ref().unwrap();
+        assert_eq!(sel.source, SelectionSource::Result);
+        assert_eq!(sel.start, anchor);
+        assert_eq!(sel.end, 12);
     }
 
     // -------------------------------------------------------------------------
