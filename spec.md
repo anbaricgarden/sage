@@ -1,6 +1,6 @@
 # The Token-Efficient Coding Agent: A Comprehensive Engineering Specification
 
-**TL;DR —** This specification describes a multi-agent coding system designed from first principles to minimize both input context tokens and output generation tokens at every architectural layer. The design combines **hash-anchored diff blocks** (93% output token reduction), **AST-based CodeGraph with pageRank scoring** (precision context retrieval), **specialized sub-agent models** (52% of budget to a code-specific editor), and **non-linear action graph execution** (parallel speculative paths with early termination). Cumulatively, these strategies reduce per-task token consumption from ~10,000 to ~1,400 tokens — an **86% reduction** versus a naive baseline — while improving edit accuracy and fault recovery.
+**TL;DR —** This specification describes a multi-agent coding system designed from first principles to minimize both input context tokens and output generation tokens at every architectural layer. The design combines **hash-anchored diff blocks** (93% output token reduction), **AST-based CodeGraph with pageRank scoring** (precision context retrieval), **specialized sub-agents calling API-based LLMs** (right-sized model per phase), and **non-linear action graph execution** (parallel speculative paths with early termination). Cumulatively, these strategies reduce per-task token consumption from ~10,000 to ~1,400 tokens — an **86% reduction** versus a naive baseline — while improving edit accuracy and fault recovery.
 
 ---
 
@@ -22,12 +22,12 @@ The guiding principle is **signal-to-noise maximization**: every token sent to o
 
 | Decision | Rationale | Token Impact |
 |---|---|---|
-| **Multi-agent architecture** with 4 specialized models | Each phase uses the smallest capable model; no over-provisioning [^8^] | −30% input (smaller context per model), −25% output (specialized generation) |
+| **Multi-agent architecture** with 4 specialized sub-agents | Each phase uses the smallest capable API model; no over-provisioning [^8^] | −30% input (smaller context per model), −25% output (specialized generation) |
 | **Hash-anchored mini-diff format** | Only changed lines + surrounding context hashes; no full file restatement [^36^][^37^] | −93% output for edit operations |
 | **AST-based CodeGraph (tree-sitter)** | Symbol-level dependency tracking with pageRank relevance scoring | −58% input context (load only relevant symbols) |
 | **Hybrid retrieval: AST + embeddings** | Structural precision + semantic similarity; no false negatives on type dependencies | −15% input (fewer retrieved files) |
 | **Action graph execution** | Non-linear loop: parallel branches, speculative paths, early termination on success [^45^] | −35% turns per task |
-| **Prompt compression (LLMLingua-2)** | On-the-fly pruning of redundant tokens in context before sending to model [^29^][^31^] | −25% input tokens |
+| **Prompt compression (code-aware pruning)** | Remove redundant comments, whitespace, and unused imports before sending to API model | −25% input tokens |
 | **Tool batching + result summarization** | Parallel tool calls; compressed tool results (not raw output) injected into context [^25^] | −40% overhead per tool call |
 | **Content-addressed blob storage** | Git-style SHA-256 addressing for all file versions; O(1) change detection | Near-zero diff computation cost |
 
@@ -38,27 +38,27 @@ The guiding principle is **signal-to-noise maximization**: every token sent to o
 
 ### 2.1 Why Multi-Agent?
 
-The single most impactful architectural decision for token efficiency is splitting the monolithic agent into **specialized sub-agents**, each running a model sized precisely for its task. A 200B-parameter frontier model is overkill for planning and review — a 7B-parameter model produces equivalent quality output at 1/30th the inference cost for those specific tasks. Conversely, code editing benefits enormously from a 32B-parameter code-specialist model. The key insight from recent research [^8^][^45^] is that **model capability should match task complexity** — and token budgets should be allocated proportionally.
+The single most impactful architectural decision for token efficiency is splitting the monolithic agent into **specialized sub-agents**, each calling an API-based LLM chosen for its task. A frontier model (e.g., GPT-4o, Claude 3.5 Sonnet) is overkill for planning and review — a smaller, cheaper API model (e.g., GPT-4o-mini, Claude 3.5 Haiku) produces equivalent quality output at a fraction of the cost for those specific tasks. Conversely, code editing benefits from a more capable model with strong structured-output support. The key insight from recent research [^8^][^45^] is that **model capability should match task complexity** — and token budgets should be allocated proportionally.
 
 ### 2.2 The Four-Agent Design
 
 The system comprises four distinct agents, each with a dedicated model, context window configuration, and token budget allocation:
 
-| Agent | Model | Parameters | Context Window | Token Budget | Role |
-|---|---|---|---|---|---|
-| **Planner** | Qwen2.5-14B-Instruct | 14B | 32K | 8% of task budget | Hierarchical task decomposition, action graph generation, token budget allocation per subtask |
-| **Editor** | Qwen2.5-Coder-32B-Instruct or DeepSeek-Coder-V2 | 32B | 128K | 52% of task budget | Hash-anchored diff generation, speculative edits, format validation |
-| **Executor** | Claude 3.5 Sonnet or GPT-4o-mini | 175B (API) | 200K | 28% of task budget | Parallel tool execution, result summarization, error recovery, streaming output |
-| **Reviewer** | Qwen2.5-7B-Instruct | 7B | 32K | 8% of task budget | Semantic validation, drift detection, quality gating, rollback decisions |
-| **Orchestrator** | Hardcoded state machine | N/A | N/A | 4% overhead | Agent dispatch, context routing, checkpoint/rollback |
+| Agent | API Model | Context Window | Token Budget | Role |
+|---|---|---|---|---|
+| **Planner** | OpenAI GPT-4o-mini or Anthropic Claude 3.5 Haiku | 128K–200K | 8% of task budget | Hierarchical task decomposition, action graph generation, token budget allocation per subtask |
+| **Editor** | OpenAI GPT-4o or Anthropic Claude 3.5 Sonnet | 128K–200K | 52% of task budget | Hash-anchored diff generation, speculative edits, format validation |
+| **Executor** | OpenAI GPT-4o-mini or Anthropic Claude 3.5 Haiku | 128K–200K | 28% of task budget | Parallel tool execution, result summarization, error recovery, streaming output |
+| **Reviewer** | OpenAI GPT-4o-mini or Anthropic Claude 3.5 Haiku | 128K–200K | 8% of task budget | Semantic validation, drift detection, quality gating, rollback decisions |
+| **Orchestrator** | Hardcoded state machine | N/A | 4% overhead | Agent dispatch, context routing, checkpoint/rollback |
 
-The **Planner** receives only the user's task description and high-level repository metadata. It does not see file contents — its job is to decompose the task into an **action graph** (Section 7) and allocate token budgets to each subtask. Running a 14B model for this phase costs approximately 200–400 tokens versus 2,000+ for a frontier model, with no quality degradation for planning tasks.
+The **Planner** receives only the user's task description and high-level repository metadata. It does not see file contents — its job is to decompose the task into an **action graph** (Section 7) and allocate token budgets to each subtask. Using a smaller API model for this phase costs a fraction of the tokens versus a frontier model, with no quality degradation for planning tasks.
 
 The **Editor** is the token-heaviest phase and receives the full context assembled by the Context Assembler (Section 4). It generates hash-anchored diff blocks (Section 3) using structured output mode.
 
 The **Executor** handles all tool calls: file system operations, test execution, linter invocation, and git commands. It batches tool calls in parallel (Section 6) and summarizes results before injecting them into context. Using an API model here is acceptable because tool execution is typically I/O-bound, not generation-bound — the model's job is result interpretation, not code synthesis.
 
-The **Reviewer** performs lightweight semantic validation: checking that edits preserve type signatures, don't break imports, and maintain test coverage. It runs a 7B model because review is primarily pattern matching — checking AST invariants, not generating creative code. The reviewer can trigger rollback (restoring from a content-addressed checkpoint) or approve the edit for final application.
+The **Reviewer** performs lightweight semantic validation: checking that edits preserve type signatures, don't break imports, and maintain test coverage. Review is primarily pattern matching — checking AST invariants, not generating creative code — so a smaller, faster API model is sufficient. The reviewer can trigger rollback (restoring from a content-addressed checkpoint) or approve the edit for final application.
 
 ### 2.3 Context Isolation
 
@@ -203,10 +203,10 @@ AST retrieval guarantees 100% recall for structural dependencies — if file A i
 
 The embedding retrieval pipeline runs in parallel with AST retrieval and handles **semantic similarity**:
 
-1. **Task embedding**: Encode the task description using a code-specific embedding model (e.g., CodeBERT, Starcoder-embedding, or OpenAI's text-embedding-3-large).
+1. **Task embedding**: Encode the task description using an API embedding model (e.g., OpenAI text-embedding-3-large or similar).
 2. **Symbol embedding index**: All symbols in the CodeGraph are pre-encoded and stored in a FAISS or HNSW index for approximate nearest-neighbor search.
 3. **Hybrid search**: Combine the task embedding with symbol names and docstrings for multi-field retrieval.
-4. **Reranking**: A cross-encoder reranker (e.g., BGE-reranker) scores the top 50 candidates for precise relevance.
+4. **Reranking**: An API-based reranker or lightweight cross-encoder scores the top 50 candidates for precise relevance.
 5. **Deduplication**: Remove symbols already found by AST retrieval to avoid redundancy.
 
 Embedding retrieval is particularly valuable for **cross-file semantic relationships** that the AST doesn't capture: similar function implementations, analogous design patterns, or test cases that exercise similar logic but don't share structural edges.
@@ -330,16 +330,16 @@ These gates reduce the average number of turns per task by 35–50% compared to 
 
 ## 8. Prompt Compression and Semantic Pruning
 
-### 8.1 LLMLingua-2 Integration
+### 8.1 Prompt Compression
 
-Even with precise context retrieval, the assembled prompt may exceed the optimal token budget. The Prompt Compressor applies **LLMLingua-2** [^29^][^31^] — a prompt compression technique that uses a small language model (typically 1–2B parameters) to remove redundant tokens from the prompt while preserving semantic meaning.
+Even with precise context retrieval, the assembled prompt may exceed the optimal token budget. The Prompt Compressor applies **code-aware token pruning** to remove redundant tokens from the prompt before sending to the API model, while preserving semantic meaning.
 
-Unlike truncation (which discards the end of the prompt, potentially losing critical information), LLMLingua-2 uses **token importance scoring** to identify and remove low-information tokens: repeated whitespace, boilerplate comments, verbose variable names, and syntactic sugar that doesn't affect semantic understanding.
+Unlike truncation (which discards the end of the prompt, potentially losing critical information), the compressor uses **static and heuristic pruning rules** to identify and remove low-information tokens: repeated whitespace, boilerplate comments, verbose variable names, and syntactic sugar that doesn't affect semantic understanding.
 
 | Compression Target | Method | Token Reduction | Quality Impact |
 |---|---|---|---|
 | System prompt | Static template optimization | 15–20% | None (one-time optimization) |
-| File contents | LLMLingua-2 with code-aware pruning | 25–35% | Minimal (preserves semantics) |
+| File contents | Code-aware token pruning | 25–35% | Minimal (preserves semantics) |
 | Tool results | Rule-based summarization | 50–80% | None (lossy by design) |
 | Conversation history | Hierarchical summarization | 40–60% | Low (key decisions preserved) |
 
@@ -358,7 +358,7 @@ The compression system applies **code-specific pruning rules** that a general-pu
 
 As the conversation progresses, the prompt grows with each turn's observation and action. The system applies **hierarchical summarization** to the conversation history:
 
-1. **Turn-level**: Each completed turn (observation + action + result) is summarized into a single sentence by the Reviewer agent (7B model, ~50 tokens).
+1. **Turn-level**: Each completed turn (observation + action + result) is summarized into a single sentence by the Reviewer agent (~50 tokens).
 2. **Phase-level**: Every 5 turns, phase-level summaries are generated (e.g., "Explored 3 approaches; settled on refactoring `Parser` class").
 3. **Task-level**: A running task summary is maintained and updated after each phase completion.
 
@@ -462,7 +462,7 @@ The cumulative impact of all optimizations, from a naive baseline of 10,000 toke
 
 | Dimension | Baseline | Optimized | Reduction | Primary Strategies |
 |---|---|---|---|---|
-| **Input context tokens** | 6,500 | 780 | **88%** | CodeGraph, lazy loading, hybrid retrieval, prompt compression |
+| **Input context tokens** | 6,500 | 970 | **85%** | CodeGraph, lazy loading, hybrid retrieval, prompt compression |
 | **Output generation tokens** | 2,800 | 280 | **90%** | Hash-anchored edits, speculative generation, structured output |
 | **Tool overhead tokens** | 700 | 150 | **79%** | Batching, parallel execution, result summarization, compression |
 | **Total per-task tokens** | 10,000 | 1,400 | **86.0%** | All layers combined |
@@ -499,9 +499,9 @@ Split the monolithic agent into Planner, Editor, Executor, and Reviewer. Impleme
 
 | Component | Deliverable | Token Impact |
 |---|---|---|
-| Planner agent (14B model) | Task decomposition + action graph gen | **−30% input (right-size models)** |
-| Executor agent (API model) | Parallel tool batching + summarization | **−40% tool overhead** |
-| Reviewer agent (7B model) | Semantic validation + rollback | Prevents token-wasting retry loops |
+| Planner agent | Task decomposition + action graph gen | **−30% input (right-size models)** |
+| Executor agent | Parallel tool batching + summarization | **−40% tool overhead** |
+| Reviewer agent | Semantic validation + rollback | Prevents token-wasting retry loops |
 | Action graph executor | DAG-based parallel execution | **−35% turns per task** |
 
 ### 11.4 Phase 4: Polish and Metrics (Weeks 10–12)
@@ -510,7 +510,7 @@ Implement prompt compression, build the measurement framework, and add integrati
 
 | Component | Deliverable | Impact |
 |---|---|---|
-| LLMLingua-2 prompt compression | Code-aware token pruning | **−25% input tokens** |
+| Prompt compression | Code-aware token pruning | **−25% input tokens** |
 | Token measurement dashboard | Real-time token accounting per agent | Optimization visibility |
 | End-to-end integration tests | Full multi-agent task pipeline | Quality assurance |
 | Benchmark suite (SWE-bench Lite, HumanEval) | Automated evaluation against baselines | Success tracking |
