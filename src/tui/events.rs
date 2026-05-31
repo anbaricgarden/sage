@@ -269,7 +269,7 @@ fn handle_task_keys(app: &mut App, code: KeyCode, modifiers: KeyModifiers) {
             app.task_input_focused = true;
             auto_scroll(app, width);
         }
-        KeyCode::Enter if modifiers.contains(KeyModifiers::ALT) => {
+        KeyCode::Enter if modifiers.contains(KeyModifiers::SHIFT) => {
             let pos = app.task_cursor.min(app.task_input.len());
             app.task_input.insert(pos, '\n');
             app.task_cursor = pos + 1;
