@@ -1,8 +1,26 @@
-use sage::agent::editor::EditorAgent;
-use sage::blob_store::BlobStore;
-use sage::diff::applicator::apply_diff;
+use std::env;
 
 fn main() {
+    let args: Vec<String> = env::args().collect();
+
+    // If --tui flag is passed, run the terminal UI.
+    if args.iter().any(|a| a == "--tui" || a == "-t") {
+        if let Err(e) = sage::tui::run::run_tui() {
+            eprintln!("TUI error: {}", e);
+            std::process::exit(1);
+        }
+        return;
+    }
+
+    // Otherwise run the CLI demo.
+    cli_demo();
+}
+
+fn cli_demo() {
+    use sage::agent::editor::EditorAgent;
+    use sage::blob_store::BlobStore;
+    use sage::diff::applicator::apply_diff;
+
     let store = BlobStore::new();
     let agent = EditorAgent::new();
 
