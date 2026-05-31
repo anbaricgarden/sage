@@ -31,7 +31,6 @@ The guiding principle is **signal-to-noise maximization**: every token sent to o
 | **Tool batching + result summarization** | Parallel tool calls; compressed tool results (not raw output) injected into context [^25^] | −40% overhead per tool call |
 | **Content-addressed blob storage** | Git-style SHA-256 addressing for all file versions; O(1) change detection | Near-zero diff computation cost |
 
-![System Architecture](system_architecture.png)
 
 ---
 
@@ -65,7 +64,6 @@ The **Reviewer** performs lightweight semantic validation: checking that edits p
 
 Each agent operates with **isolated context** — the Planner's context is not shared with the Editor. This is intentional: the Planner's context (task description + repo map) is structurally different from the Editor's context (file contents + diff format instructions). The Orchestrator routes only the necessary context to each agent, appending new or changed context for each turn.
 
-![Multi-Agent Loop](multi_agent_loop.png)
 
 ---
 
@@ -124,7 +122,6 @@ The speculative strategy works as follows: when the Editor encounters an ambiguo
 
 The cumulative impact across a typical SWE-bench task (involving 3–7 file edits) is a reduction from ~15,000 output tokens to ~1,100 — an effective **92.7% savings** on the output dimension alone [^36^][^37^].
 
-![Hash-Anchored Edit Comparison](hash_anchored_edit_comparison.png)
 
 ---
 
@@ -180,7 +177,6 @@ The CodeGraph maintains a **change journal** of all file modifications. When a f
 
 The structural diff format records symbol-level operations: `ADD_SYMBOL`, `REMOVE_SYMBOL`, `MODIFY_SIGNATURE`, `MODIFY_BODY`, `MOVE_SYMBOL`. This is more semantically meaningful than text diffs and enables better context invalidation decisions.
 
-![CodeGraph Structure](codegraph_structure.png)
 
 ---
 
