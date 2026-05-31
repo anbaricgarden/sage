@@ -45,6 +45,33 @@ impl EditorAgent {
                     block.recompute_new_anchor();
                     return Some(block);
                 }
+
+                // Fallback: if old_str is not literally in the file, it may be a description.
+                // Look for a quoted string in the task that is not in the content, and replace
+                // the first quoted string in the content with it.
+                if !content.contains(old_str) {
+                    let task_quote_re = Regex::new(r#"['"]([^'"]+)['"]"#).ok()?;
+                    for tcap in task_quote_re.captures_iter(task) {
+                        let inner = tcap.get(1)?.as_str();
+                        if !content.contains(inner) {
+                            let content_quote_re = Regex::new(r#"['"]([^'"]+)['"]"#).ok()?;
+                            if let Some(line_idx) = content.lines().position(|line| content_quote_re.is_match(line)) {
+                                let mut block = EditBlock::compute_anchor(file_path, content, line_idx, 3, 3);
+                                for line in &mut block.new_lines {
+                                    if let Some(m) = content_quote_re.find(line) {
+                                        let old_quoted = m.as_str();
+                                        let new_quoted = tcap.get(0)?.as_str();
+                                        if old_quoted != new_quoted {
+                                            *line = line.replacen(old_quoted, new_quoted, 1);
+                                        }
+                                    }
+                                }
+                                block.recompute_new_anchor();
+                                return Some(block);
+                            }
+                        }
+                    }
+                }
             }
         }
         None
@@ -61,6 +88,15 @@ impl EditorAgent {
                 let mut block = EditBlock::compute_anchor(file_path, content, line_idx, 3, 3);
                 let insert_pos = block.new_lines.iter().position(|l| l.contains(after_marker))? + 1;
                 block.new_lines.insert(insert_pos, new_content.to_string());
+                block.recompute_new_anchor();
+                return Some(block);
+            }
+
+            // Fallback: if after_marker not found, look for a println line.
+            if let Some(line_idx) = lines.iter().position(|line| line.contains("println")) {
+                let mut block = EditBlock::compute_anchor(file_path, content, line_idx, 3, 3);
+                let insert_pos = block.new_lines.iter().position(|l| l.contains("println"))? + 1;
+                block.new_lines.insert(insert_pos, format!(r#"    println!("{}");"#, new_content));
                 block.recompute_new_anchor();
                 return Some(block);
             }
