@@ -11,19 +11,19 @@ impl AstParser {
     pub fn for_language(name: &str) -> Result<Self, String> {
         let (lang, lang_name): (Language, String) = match name.to_lowercase().as_str() {
             "python" | "py" => (
-                tree_sitter_python::language().into(),
+                tree_sitter_python::language(),
                 "python".to_string(),
             ),
             "javascript" | "js" => (
-                tree_sitter_javascript::language().into(),
+                tree_sitter_javascript::language(),
                 "javascript".to_string(),
             ),
             "typescript" | "ts" => (
-                tree_sitter_typescript::language_typescript().into(),
+                tree_sitter_typescript::language_typescript(),
                 "typescript".to_string(),
             ),
             "go" | "golang" => (
-                tree_sitter_go::language().into(),
+                tree_sitter_go::language(),
                 "go".to_string(),
             ),
             _ => return Err(format!("Unsupported language: {}", name)),

@@ -7,11 +7,17 @@ pub struct BlobStore {
     blobs: Arc<Mutex<HashMap<String, Vec<u8>>>>,
 }
 
-impl BlobStore {
-    pub fn new() -> Self {
+impl Default for BlobStore {
+    fn default() -> Self {
         Self {
             blobs: Arc::new(Mutex::new(HashMap::new())),
         }
+    }
+}
+
+impl BlobStore {
+    pub fn new() -> Self {
+        Self::default()
     }
 
     /// Store content and return its SHA-256 hex hash.

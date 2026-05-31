@@ -4,6 +4,12 @@ use regex::Regex;
 
 pub struct EditorAgent;
 
+impl Default for EditorAgent {
+    fn default() -> Self {
+        Self
+    }
+}
+
 impl EditorAgent {
     pub fn new() -> Self {
         Self
@@ -31,6 +37,8 @@ impl EditorAgent {
             Regex::new(r#"(?i)change\s+['\"]?(.+?)['\"]?\s+to\s+['\"]?(.+?)['\"]?\s*$"#).ok()?,
             Regex::new(r#"(?i)replace\s+['\"]?(.+?)['\"]?\s+with\s+['\"]?(.+?)['\"]?\s*$"#).ok()?,
         ];
+        let task_quote_re = Regex::new(r#"['"]([^'"]+)['"]"#).ok()?;
+        let content_quote_re = Regex::new(r#"['"]([^'"]+)['"]"#).ok()?;
 
         for pat in &patterns {
             if let Some(cap) = pat.captures(task) {
@@ -50,25 +58,25 @@ impl EditorAgent {
                 // Look for a quoted string in the task that is not in the content, and replace
                 // the first quoted string in the content with it.
                 if !content.contains(old_str) {
-                    let task_quote_re = Regex::new(r#"['"]([^'"]+)['"]"#).ok()?;
                     for tcap in task_quote_re.captures_iter(task) {
                         let inner = tcap.get(1)?.as_str();
                         if !content.contains(inner) {
-                            let content_quote_re = Regex::new(r#"['"]([^'"]+)['"]"#).ok()?;
-                            if let Some(line_idx) = content.lines().position(|line| content_quote_re.is_match(line)) {
-                                let mut block = EditBlock::compute_anchor(file_path, content, line_idx, 3, 3);
-                                for line in &mut block.new_lines {
-                                    if let Some(m) = content_quote_re.find(line) {
-                                        let old_quoted = m.as_str();
-                                        let new_quoted = tcap.get(0)?.as_str();
-                                        if old_quoted != new_quoted {
-                                            *line = line.replacen(old_quoted, new_quoted, 1);
-                                        }
+                            let line_idx = match content.lines().position(|line| content_quote_re.is_match(line)) {
+                                Some(idx) => idx,
+                                None => continue,
+                            };
+                            let mut block = EditBlock::compute_anchor(file_path, content, line_idx, 3, 3);
+                            for line in &mut block.new_lines {
+                                if let Some(m) = content_quote_re.find(line) {
+                                    let old_quoted = m.as_str();
+                                    let new_quoted = tcap.get(0)?.as_str();
+                                    if old_quoted != new_quoted {
+                                        *line = line.replacen(old_quoted, new_quoted, 1);
                                     }
                                 }
-                                block.recompute_new_anchor();
-                                return Some(block);
                             }
+                            block.recompute_new_anchor();
+                            return Some(block);
                         }
                     }
                 }
