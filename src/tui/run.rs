@@ -2,7 +2,11 @@ use std::io;
 
 use crossterm::{
     cursor::Show,
-    event::{DisableMouseCapture, EnableMouseCapture},
+    event::{
+        DisableMouseCapture, EnableMouseCapture,
+        KeyboardEnhancementFlags, PopKeyboardEnhancementFlags,
+        PushKeyboardEnhancementFlags,
+    },
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
     ExecutableCommand,
 };
@@ -30,6 +34,16 @@ pub fn run_tui() -> io::Result<()> {
     if app.mouse_enabled {
         terminal.backend_mut().execute(EnableMouseCapture)?;
     }
+
+    // Enable Kitty keyboard enhancement protocol so terminals report modifiers
+    // on keys like Enter, Tab, Backspace, etc. (Shift+Enter, Ctrl+Enter, …).
+    // Note: this just writes an escape sequence; we cannot know whether the
+    // terminal actually supports it until a key event arrives.
+    let _ = terminal.backend_mut().execute(PushKeyboardEnhancementFlags(
+        KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES
+            | KeyboardEnhancementFlags::REPORT_ALTERNATE_KEYS,
+    ));
+
     app.ingest_demo_files();
     app.log(
         "System",
@@ -44,6 +58,7 @@ pub fn run_tui() -> io::Result<()> {
     if app.mouse_enabled {
         let _ = stdout.execute(DisableMouseCapture);
     }
+    let _ = stdout.execute(PopKeyboardEnhancementFlags);
     stdout.execute(Show)?;
     disable_raw_mode()?;
     stdout.execute(LeaveAlternateScreen)?;
