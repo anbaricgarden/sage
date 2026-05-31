@@ -364,7 +364,7 @@ fn test_context_assembler_query_and_assemble() {
     assert!(results.iter().any(|(id, _)| id == &id1));
     assert!(results.iter().any(|(id, _)| id == &id2));
 
-    let context = assembler.assemble_context(&graph, &results, &HashMap::new(), 500);
+    let context = assembler.assemble_context(&graph, &results, 500);
     assert!(context.contains("process_order"));
 }
 

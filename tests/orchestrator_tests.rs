@@ -2,7 +2,6 @@ use std::collections::HashMap;
 
 use sage::agent::action_graph::{ActionGraph, ActionNode, ActionType};
 use sage::agent::checkpoint::CheckpointManager;
-use sage::agent::editor::EditorAgent;
 use sage::agent::executor::ExecutorAgent;
 use sage::agent::orchestrator::{Orchestrator, OrchestratorState};
 use sage::agent::planner::PlannerAgent;

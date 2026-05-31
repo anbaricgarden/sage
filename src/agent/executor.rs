@@ -1,9 +1,8 @@
 use std::collections::HashMap;
-use std::fs;
 
 use super::action_graph::{ActionNode, ActionType};
-use super::Agent;
-use crate::blob_store::BlobStore;
+use super::tools::{ListDirTool, ReadFileTool, RunTestsTool, SearchTool, Tool, WriteFileTool};
+use super::{Agent, ExecutorRole, SnapshotStore};
 use crate::diff::applicator::apply_diff;
 use crate::diff::format::EditBlock;
 
@@ -12,17 +11,30 @@ use crate::diff::format::EditBlock;
 pub struct ExecutorAgent {
     /// Max number of independent tool calls to execute in one batch.
     pub batch_size: usize,
+    tools: HashMap<String, Box<dyn Tool>>,
 }
 
 impl Default for ExecutorAgent {
     fn default() -> Self {
-        Self { batch_size: 16 }
+        Self::new()
     }
 }
 
 impl ExecutorAgent {
     pub fn new() -> Self {
-        Self::default()
+        let mut tools: HashMap<String, Box<dyn Tool>> = HashMap::new();
+        tools.insert("read_file".to_string(), Box::new(ReadFileTool));
+        tools.insert("write_file".to_string(), Box::new(WriteFileTool));
+        tools.insert("list_dir".to_string(), Box::new(ListDirTool));
+        tools.insert("search".to_string(), Box::new(SearchTool));
+        tools.insert("grep".to_string(), Box::new(SearchTool));
+        tools.insert("run_tests".to_string(), Box::new(RunTestsTool));
+        Self { batch_size: 16, tools }
+    }
+
+    /// Register a custom tool. Overwrites any existing tool with the same name.
+    pub fn register_tool(&mut self, name: &str, tool: Box<dyn Tool>) {
+        self.tools.insert(name.to_string(), tool);
     }
 
     /// Execute a single action node and return a summary of the result.
@@ -30,7 +42,7 @@ impl ExecutorAgent {
         &self,
         node: &ActionNode,
         file_contents: &mut HashMap<String, String>,
-        _store: &BlobStore,
+        _store: &dyn SnapshotStore,
     ) -> Result<String, String> {
         match &node.action_type {
             ActionType::Edit { file_path, .. } => {
@@ -58,7 +70,7 @@ impl ExecutorAgent {
         file_path: &str,
         block: &EditBlock,
         file_contents: &mut HashMap<String, String>,
-        store: &BlobStore,
+        store: &dyn SnapshotStore,
     ) -> Result<String, String> {
         let content = file_contents
             .get(file_path)
@@ -76,7 +88,7 @@ impl ExecutorAgent {
         &self,
         nodes: &[&ActionNode],
         file_contents: &mut HashMap<String, String>,
-        store: &BlobStore,
+        store: &dyn SnapshotStore,
     ) -> HashMap<String, Result<String, String>> {
         let mut results = HashMap::new();
         for node in nodes {
@@ -92,79 +104,10 @@ impl ExecutorAgent {
         arguments: &HashMap<String, String>,
         file_contents: &mut HashMap<String, String>,
     ) -> Result<String, String> {
-        match tool {
-            "read_file" => {
-                let path = arguments.get("path").ok_or("Missing 'path' argument")?;
-                let content = fs::read_to_string(path)
-                    .or_else(|_| {
-                        file_contents.get(path).cloned().ok_or_else(|| {
-                            format!("File not found: {}", path)
-                        })
-                    })?;
-                // Summarize: return first 20 lines + total line count.
-                let lines: Vec<&str> = content.lines().collect();
-                let preview: Vec<String> = lines
-                    .iter()
-                    .take(20)
-                    .map(|s| s.to_string())
-                    .collect();
-                Ok(format!(
-                    "{} ({} lines)\n{}",
-                    path,
-                    lines.len(),
-                    preview.join("\n")
-                ))
-            }
-            "write_file" => {
-                let path = arguments.get("path").ok_or("Missing 'path' argument")?;
-                let content = arguments.get("content").ok_or("Missing 'content' argument")?;
-                file_contents.insert(path.to_string(), content.to_string());
-                Ok(format!("Wrote {} ({} bytes)", path, content.len()))
-            }
-            "list_dir" => {
-                let path = arguments.get("path").ok_or("Missing 'path' argument")?;
-                let entries = fs::read_dir(path)
-                    .map_err(|e| format!("Failed to list directory: {}", e))?
-                    .filter_map(|entry| {
-                        entry.ok().and_then(|e| {
-                            e.file_name().into_string().ok()
-                        })
-                    })
-                    .collect::<Vec<String>>();
-                Ok(format!("{} entries in {}: {}", entries.len(), path, entries.join(", ")))
-            }
-            "search" | "grep" => {
-                let query = arguments.get("query").ok_or("Missing 'query' argument")?;
-                let mut matches = Vec::new();
-                for (path, content) in file_contents.iter() {
-                    for (line_num, line) in content.lines().enumerate() {
-                        if line.contains(query) {
-                            matches.push(format!("{}:{} {}", path, line_num + 1, line.trim()));
-                            if matches.len() >= 20 {
-                                break;
-                            }
-                        }
-                    }
-                    if matches.len() >= 20 {
-                        break;
-                    }
-                }
-                if matches.len() >= 20 {
-                    matches.push("... (truncated after 20 matches)".to_string());
-                }
-                Ok(format!(
-                    "Found {} matches for '{}'\n{}",
-                    matches.len().saturating_sub(1),
-                    query,
-                    matches.join("\n")
-                ))
-            }
-            "run_tests" => {
-                // Placeholder: in a real system this would invoke the test runner.
-                Ok("Tests: pass/fall summary not available in stub".to_string())
-            }
-            _ => Err(format!("Unknown tool: {}", tool)),
-        }
+        self.tools
+            .get(tool)
+            .ok_or_else(|| format!("Unknown tool: {}", tool))?
+            .execute(arguments, file_contents)
     }
 
     /// Summarize raw tool results into a compact string for injection into agent context.
@@ -183,5 +126,39 @@ impl ExecutorAgent {
 impl Agent for ExecutorAgent {
     fn name(&self) -> &'static str {
         "ExecutorAgent"
+    }
+}
+
+impl ExecutorRole for ExecutorAgent {
+    fn execute(
+        &self,
+        node: &ActionNode,
+        file_contents: &mut HashMap<String, String>,
+        store: &dyn SnapshotStore,
+    ) -> Result<String, String> {
+        ExecutorAgent::execute(self, node, file_contents, store)
+    }
+
+    fn execute_batch(
+        &self,
+        nodes: &[&ActionNode],
+        file_contents: &mut HashMap<String, String>,
+        store: &dyn SnapshotStore,
+    ) -> HashMap<String, Result<String, String>> {
+        ExecutorAgent::execute_batch(self, nodes, file_contents, store)
+    }
+
+    fn apply_edit_block(
+        &self,
+        file_path: &str,
+        block: &EditBlock,
+        file_contents: &mut HashMap<String, String>,
+        store: &dyn SnapshotStore,
+    ) -> Result<String, String> {
+        ExecutorAgent::apply_edit_block(self, file_path, block, file_contents, store)
+    }
+
+    fn summarize_results(&self, results: &HashMap<String, Result<String, String>>) -> String {
+        ExecutorAgent::summarize_results(self, results)
     }
 }

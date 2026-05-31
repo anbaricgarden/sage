@@ -1,6 +1,13 @@
 use std::collections::HashMap;
 
-use crate::blob_store::BlobStore;
+/// Abstract seam for content-addressed snapshot storage.
+/// Implemented by `BlobStore` and by test doubles.
+pub trait SnapshotStore {
+    /// Store content and return a content-addressed hash/key.
+    fn put(&self, content: Vec<u8>) -> String;
+    /// Retrieve content by its hash/key.
+    fn get(&self, hash: &str) -> Option<Vec<u8>>;
+}
 
 /// A lightweight snapshot of the working tree at a point in time.
 /// Stores only blob hash pointers, not full file contents.
@@ -58,11 +65,11 @@ impl CheckpointManager {
         self.checkpoints.get(id).map(|cp| cp.file_hashes.clone())
     }
 
-    /// Reconstruct the actual file contents for a checkpoint using the blob store.
+    /// Reconstruct the actual file contents for a checkpoint using a `SnapshotStore`.
     pub fn restore_contents(
         &self,
         id: &str,
-        store: &BlobStore,
+        store: &dyn SnapshotStore,
     ) -> Option<HashMap<String, String>> {
         let file_hashes = self.restore(id)?;
         let mut contents = HashMap::new();
@@ -88,5 +95,33 @@ impl CheckpointManager {
                 .and_then(|cp| cp.parent.clone());
         }
         lineage
+    }
+}
+
+#[cfg(test)]
+pub struct MockSnapshotStore {
+    data: std::sync::Mutex<HashMap<String, Vec<u8>>>,
+}
+
+#[cfg(test)]
+impl MockSnapshotStore {
+    pub fn new() -> Self {
+        Self {
+            data: std::sync::Mutex::new(HashMap::new()),
+        }
+    }
+}
+
+#[cfg(test)]
+impl SnapshotStore for MockSnapshotStore {
+    fn put(&self, content: Vec<u8>) -> String {
+        use sha2::{Digest, Sha256};
+        let hash = hex::encode(Sha256::digest(&content));
+        self.data.lock().unwrap().insert(hash.clone(), content);
+        hash
+    }
+
+    fn get(&self, hash: &str) -> Option<Vec<u8>> {
+        self.data.lock().unwrap().get(hash).cloned()
     }
 }

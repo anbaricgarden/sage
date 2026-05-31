@@ -2,10 +2,8 @@ use std::collections::HashMap;
 
 use super::action_graph::{ActionGraph, ActionNode, ActionType};
 use super::checkpoint::CheckpointManager;
-use super::editor::EditorAgent;
-use super::executor::ExecutorAgent;
-use super::planner::PlannerAgent;
-use super::reviewer::{ReviewDecision, ReviewerAgent};
+use super::reviewer::ReviewDecision;
+use super::{EditorRole, ExecutorRole, PlannerRole, ReviewerRole};
 use crate::blob_store::BlobStore;
 use crate::codegraph::graph::CodeGraph;
 use crate::codegraph::repo_map::RepoMap;
@@ -26,10 +24,10 @@ pub enum OrchestratorState {
 /// routes context, and drives the action graph to completion.
 pub struct Orchestrator {
     pub state: OrchestratorState,
-    pub planner: PlannerAgent,
-    pub editor: EditorAgent,
-    pub executor: ExecutorAgent,
-    pub reviewer: ReviewerAgent,
+    pub planner: Box<dyn PlannerRole>,
+    pub editor: Box<dyn EditorRole>,
+    pub executor: Box<dyn ExecutorRole>,
+    pub reviewer: Box<dyn ReviewerRole>,
     pub checkpoints: CheckpointManager,
     pub blob_store: BlobStore,
     /// In-memory working tree: file_path -> content.
@@ -44,12 +42,22 @@ pub struct Orchestrator {
 
 impl Default for Orchestrator {
     fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl Orchestrator {
+    pub fn new() -> Self {
+        use super::editor::EditorAgent;
+        use super::executor::ExecutorAgent;
+        use super::planner::PlannerAgent;
+        use super::reviewer::ReviewerAgent;
         Self {
             state: OrchestratorState::Idle,
-            planner: PlannerAgent::new(),
-            editor: EditorAgent::new(),
-            executor: ExecutorAgent::new(),
-            reviewer: ReviewerAgent::new(),
+            planner: Box::new(PlannerAgent::new()),
+            editor: Box::new(EditorAgent::new()),
+            executor: Box::new(ExecutorAgent::new()),
+            reviewer: Box::new(ReviewerAgent::new()),
             checkpoints: CheckpointManager::new(),
             blob_store: BlobStore::new(),
             file_contents: HashMap::new(),
@@ -57,12 +65,6 @@ impl Default for Orchestrator {
             history: Vec::new(),
             token_ledger: HashMap::new(),
         }
-    }
-}
-
-impl Orchestrator {
-    pub fn new() -> Self {
-        Self::default()
     }
 
     /// Ingest a file into the working tree and blob store.

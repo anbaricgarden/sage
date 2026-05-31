@@ -1,4 +1,4 @@
-use super::Agent;
+use super::{Agent, EditorRole};
 use crate::diff::format::EditBlock;
 use regex::Regex;
 
@@ -116,5 +116,16 @@ impl EditorAgent {
 impl Agent for EditorAgent {
     fn name(&self) -> &'static str {
         "EditorAgent"
+    }
+}
+
+impl EditorRole for EditorAgent {
+    fn generate_edit(
+        &self,
+        file_path: &str,
+        content: &str,
+        task: &str,
+    ) -> Result<EditBlock, String> {
+        EditorAgent::generate_edit(self, file_path, content, task)
     }
 }

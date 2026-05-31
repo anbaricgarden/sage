@@ -1,6 +1,9 @@
 pub mod context;
 pub mod edges;
+pub mod formatter;
 pub mod graph;
+pub mod language_parser;
+pub mod ranker;
 pub mod repo_map;
 pub mod retrieval;
 

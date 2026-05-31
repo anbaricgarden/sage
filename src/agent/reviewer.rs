@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 
 use super::action_graph::{ActionGraph, ActionNode, ActionType};
-use super::Agent;
+use super::{Agent, ReviewerRole};
 
 /// Lightweight semantic validation agent that checks edits for correctness
 /// and decides whether to approve, request changes, or trigger rollback.
@@ -171,5 +171,23 @@ pub enum ReviewDecision {
 impl Agent for ReviewerAgent {
     fn name(&self) -> &'static str {
         "ReviewerAgent"
+    }
+}
+
+impl ReviewerRole for ReviewerAgent {
+    fn review(
+        &self,
+        node: &ActionNode,
+        file_contents: &HashMap<String, String>,
+    ) -> Result<ReviewDecision, String> {
+        ReviewerAgent::review(self, node, file_contents)
+    }
+
+    fn summarize_turn(&self, node: &ActionNode) -> String {
+        ReviewerAgent::summarize_turn(self, node)
+    }
+
+    fn summarize_phase(&self, graph: &ActionGraph) -> String {
+        ReviewerAgent::summarize_phase(self, graph)
     }
 }

@@ -1,5 +1,5 @@
 use super::action_graph::{ActionGraph, ActionNode, ActionType};
-use super::Agent;
+use super::{Agent, PlannerRole};
 use crate::codegraph::graph::CodeGraph;
 
 /// Decomposes a user task into an action graph and allocates token budgets per subtask.
@@ -145,5 +145,16 @@ impl PlannerAgent {
 impl Agent for PlannerAgent {
     fn name(&self) -> &'static str {
         "PlannerAgent"
+    }
+}
+
+impl PlannerRole for PlannerAgent {
+    fn plan(
+        &self,
+        task: &str,
+        repo_map: &str,
+        graph: &CodeGraph,
+    ) -> Result<ActionGraph, String> {
+        PlannerAgent::plan(self, task, repo_map, graph)
     }
 }

@@ -2,9 +2,21 @@ use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
+use crate::agent::checkpoint::SnapshotStore;
+
 #[derive(Clone)]
 pub struct BlobStore {
     blobs: Arc<Mutex<HashMap<String, Vec<u8>>>>,
+}
+
+impl SnapshotStore for BlobStore {
+    fn put(&self, content: Vec<u8>) -> String {
+        BlobStore::put(self, content)
+    }
+
+    fn get(&self, hash: &str) -> Option<Vec<u8>> {
+        BlobStore::get(self, hash)
+    }
 }
 
 impl Default for BlobStore {
