@@ -1,5 +1,7 @@
 use std::collections::VecDeque;
 
+use ratatui::layout::Rect;
+
 use crate::agent::orchestrator::{Orchestrator, OrchestratorState};
 use crate::codegraph::graph::CodeGraph;
 
@@ -74,6 +76,8 @@ pub struct App {
     pub selected_file: Option<String>,
     /// File list scroll offset.
     pub file_scroll: usize,
+    /// Cursor position inside `task_input` (byte index).
+    pub task_cursor: usize,
     /// Whether a task is currently running.
     pub running: bool,
     /// Last task result summary.
@@ -84,6 +88,11 @@ pub struct App {
     pub status_message: Option<(String, StatusKind)>,
     /// Animation frame counter for spinner.
     pub spinner_frame: usize,
+    /// Hit-test rects from last render (for mouse clicks).
+    pub sidebar_rect: Option<Rect>,
+    pub file_tree_rect: Option<Rect>,
+    pub task_input_rect: Option<Rect>,
+    pub log_area_rect: Option<Rect>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -109,6 +118,7 @@ impl App {
             logs: VecDeque::new(),
             max_logs: 1000,
             task_input: String::new(),
+            task_cursor: 0,
             task_input_focused: false,
             log_scroll: 0,
             selected_file: None,
@@ -118,6 +128,10 @@ impl App {
             should_quit: false,
             status_message: None,
             spinner_frame: 0,
+            sidebar_rect: None,
+            file_tree_rect: None,
+            task_input_rect: None,
+            log_area_rect: None,
         }
     }
 
@@ -228,6 +242,13 @@ impl App {
         ];
         for (path, content) in &files {
             self.orchestrator.ingest_file(path, content);
+        }
+        // Initialize selected_file to the first file (sorted) so file_scroll and
+        // selected_file are never out of sync on first render.
+        let mut sorted_files: Vec<String> = self.orchestrator.file_contents.keys().cloned().collect();
+        sorted_files.sort();
+        if let Some(first) = sorted_files.first() {
+            self.selected_file = Some(first.clone());
         }
         self.log("System", LogLevel::Info, "Ingested demo workspace (5 files)");
     }

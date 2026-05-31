@@ -1,5 +1,5 @@
 use ratatui::{
-    layout::{Alignment, Constraint, Direction, Layout, Margin, Rect},
+    layout::{Alignment, Constraint, Direction, Layout, Margin, Position, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span, Text},
     widgets::{
@@ -36,6 +36,9 @@ pub fn render(frame: &mut Frame, app: &mut App) {
     let area = frame.area();
     frame.render_widget(Block::default().style(Style::default().bg(BG)), area);
 
+    // Reset cursor to a safe corner so it doesn't linger from a previous frame.
+    frame.set_cursor_position(Position::new(0, 0));
+
     let h_layout = Layout::default()
         .direction(Direction::Horizontal)
         .constraints([Constraint::Length(20), Constraint::Min(0)])
@@ -69,7 +72,9 @@ pub fn render(frame: &mut Frame, app: &mut App) {
 
 // ── Sidebar ──
 
-fn render_sidebar(frame: &mut Frame, app: &App, area: Rect) {
+fn render_sidebar(frame: &mut Frame, app: &mut App, area: Rect) {
+    app.sidebar_rect = Some(area);
+
     let block = Block::default()
         .borders(Borders::RIGHT)
         .border_style(Style::default().fg(BORDER));
@@ -77,10 +82,11 @@ fn render_sidebar(frame: &mut Frame, app: &App, area: Rect) {
 
     let inner = area.inner(Margin::new(1, 1));
 
+    let version = env!("CARGO_PKG_VERSION");
     let title = Paragraph::new(Text::from(vec![
         Line::from(Span::styled("◆", Style::default().fg(ACCENT).add_modifier(Modifier::BOLD))),
         Line::from(Span::styled("sage", Style::default().fg(TEXT).add_modifier(Modifier::BOLD))),
-        Line::from(Span::styled("v0.1.0", Style::default().fg(TEXT_MUTED))),
+        Line::from(Span::styled(format!("v{}", version), Style::default().fg(TEXT_MUTED))),
     ]))
     .alignment(Alignment::Center);
 
@@ -121,6 +127,9 @@ fn render_sidebar(frame: &mut Frame, app: &App, area: Rect) {
         inner.height - title_h - 1,
     );
     frame.render_widget(list, list_area);
+
+    // Update sidebar rect to cover only the clickable list area for hit-testing.
+    app.sidebar_rect = Some(list_area);
 }
 
 // ── Dashboard ──
@@ -265,7 +274,7 @@ fn state_indicator(state: &OrchestratorState) -> Text<'_> {
 
 // ── Task Screen ──
 
-fn render_task(frame: &mut Frame, app: &App, area: Rect) {
+fn render_task(frame: &mut Frame, app: &mut App, area: Rect) {
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
@@ -313,7 +322,25 @@ fn render_task(frame: &mut Frame, app: &App, area: Rect) {
     } else {
         Span::styled(&app.task_input, Style::default().fg(TEXT)).into()
     };
+    let input_inner = chunks[1].inner(Margin::new(1, 1));
     frame.render_widget(Paragraph::new(input_text).block(input_block), chunks[1]);
+    app.task_input_rect = Some(input_inner);
+
+    // Draw cursor.
+    if app.task_input_focused {
+        let mut cursor_x = input_inner.x;
+        for (idx, c) in app.task_input.char_indices() {
+            if idx >= app.task_cursor {
+                break;
+            }
+            cursor_x += unicode_width::UnicodeWidthChar::width(c).unwrap_or(1) as u16;
+        }
+        let cursor_y = input_inner.y;
+        frame.set_cursor_position(Position::new(cursor_x, cursor_y));
+    } else {
+        // Park cursor at the start of the input box when unfocused so it doesn't drift.
+        frame.set_cursor_position(Position::new(input_inner.x, input_inner.y));
+    }
 
     // Actions.
     let action_text = if app.running {
@@ -328,7 +355,7 @@ fn render_task(frame: &mut Frame, app: &App, area: Rect) {
             Span::styled("Enter ", Style::default().fg(TEXT_SECONDARY)),
             Span::styled("Submit", Style::default().fg(ACCENT).add_modifier(Modifier::BOLD)),
             Span::styled("  |  ", Style::default().fg(TEXT_MUTED)),
-            Span::styled("Ctrl+Q", Style::default().fg(ACCENT)),
+            Span::styled("Ctrl+C", Style::default().fg(ACCENT)),
             Span::styled(" Quit", Style::default().fg(TEXT_SECONDARY)),
         ])
     };
@@ -350,7 +377,7 @@ fn render_task(frame: &mut Frame, app: &App, area: Rect) {
 
 // ── Files Screen ──
 
-fn render_files(frame: &mut Frame, app: &App, area: Rect) {
+fn render_files(frame: &mut Frame, app: &mut App, area: Rect) {
     let chunks = Layout::default()
         .direction(Direction::Horizontal)
         .constraints([Constraint::Percentage(30), Constraint::Percentage(70)])
@@ -364,6 +391,7 @@ fn render_files(frame: &mut Frame, app: &App, area: Rect) {
         .border_style(Style::default().fg(BORDER));
     let tree_inner = chunks[0].inner(Margin::new(1, 1));
     frame.render_widget(tree_block, chunks[0]);
+    app.file_tree_rect = Some(tree_inner);
 
     let mut files: Vec<String> = app.orchestrator.file_contents.keys().cloned().collect();
     files.sort();
@@ -587,7 +615,7 @@ fn render_status_bar(frame: &mut Frame, app: &App, area: Rect) {
             (text.as_str(), c)
         }
         None => {
-            let hint = "Tab/1-5 Navigate  |  Enter Submit  |  ↑↓ Scroll  |  Ctrl+Q Quit";
+            let hint = "Tab/1-5 Navigate  |  Enter Submit  |  ↑↓ Scroll  |  Ctrl+C Quit";
             (hint, TEXT_MUTED)
         }
     };

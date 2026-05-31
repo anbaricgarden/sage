@@ -1,6 +1,8 @@
 use std::io;
 
 use crossterm::{
+    cursor::Show,
+    event::{DisableMouseCapture, EnableMouseCapture},
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
     ExecutableCommand,
 };
@@ -19,6 +21,8 @@ pub fn run_tui() -> io::Result<()> {
     enable_raw_mode()?;
     let mut stdout = io::stdout();
     stdout.execute(EnterAlternateScreen)?;
+    stdout.execute(EnableMouseCapture)?;
+    stdout.execute(Show)?;
 
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
@@ -28,14 +32,17 @@ pub fn run_tui() -> io::Result<()> {
     app.log(
         "System",
         crate::tui::app::LogLevel::Info,
-        "sage TUI started. Press 1-5 or Tab to navigate, Ctrl+Q to quit.",
+        "sage TUI started. Press 1-5 or Tab to navigate, Ctrl+C to quit.",
     );
 
     let res = run_loop(&mut terminal, &mut app);
 
     // Restore terminal.
+    let stdout = terminal.backend_mut();
+    stdout.execute(DisableMouseCapture)?;
+    stdout.execute(Show)?;
     disable_raw_mode()?;
-    terminal.backend_mut().execute(LeaveAlternateScreen)?;
+    stdout.execute(LeaveAlternateScreen)?;
 
     res
 }

@@ -3,17 +3,17 @@ use std::env;
 fn main() {
     let args: Vec<String> = env::args().collect();
 
-    // If --tui flag is passed, run the terminal UI.
-    if args.iter().any(|a| a == "--tui" || a == "-t") {
-        if let Err(e) = sage::tui::run::run_tui() {
-            eprintln!("TUI error: {}", e);
-            std::process::exit(1);
-        }
+    // If --demo flag is passed, run the CLI demo.
+    if args.iter().any(|a| a == "--demo" || a == "-d") {
+        cli_demo();
         return;
     }
 
-    // Otherwise run the CLI demo.
-    cli_demo();
+    // Otherwise run the terminal UI by default.
+    if let Err(e) = sage::tui::run::run_tui() {
+        eprintln!("TUI error: {}", e);
+        std::process::exit(1);
+    }
 }
 
 fn cli_demo() {
