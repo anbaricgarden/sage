@@ -2,6 +2,90 @@ use crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers, MouseEv
 
 use super::app::{App, Screen};
 
+// ── Text wrapping & cursor utilities ──
+
+/// Sum of Unicode display widths for a string slice.
+pub fn visual_width(s: &str) -> usize {
+    s.chars()
+        .map(|c| unicode_width::UnicodeWidthChar::width(c).unwrap_or(1))
+        .sum()
+}
+
+/// Wrap `text` into visual lines of at most `width` display columns.
+/// Returns a vector of `(start_byte, end_byte)` for each line.
+/// Hard `\n` characters start a new line and are NOT included in ranges.
+pub fn wrap_text(text: &str, width: u16) -> Vec<(usize, usize)> {
+    if width == 0 {
+        return if text.is_empty() { vec![(0, 0)] } else { vec![(0, text.len())] };
+    }
+    let w = width as usize;
+    let mut lines: Vec<(usize, usize)> = Vec::new();
+    let mut start = 0usize;
+    let mut col = 0usize;
+
+    for (idx, c) in text.char_indices() {
+        let cw = unicode_width::UnicodeWidthChar::width(c).unwrap_or(1);
+        if c == '\n' {
+            lines.push((start, idx)); // newline itself is not part of the line
+            start = idx + 1;
+            col = 0;
+        } else if col + cw > w && col > 0 {
+            lines.push((start, idx)); // wrap before this char
+            start = idx;
+            col = cw;
+        } else {
+            col += cw;
+        }
+    }
+    lines.push((start, text.len()));
+    lines
+}
+
+/// Map a byte-index cursor into a visual (row, col) position.
+pub fn byte_index_to_visual_pos(text: &str, cursor: usize, width: u16) -> (usize, usize) {
+    let lines = wrap_text(text, width);
+    for (row, (s, e)) in lines.iter().enumerate() {
+        if cursor >= *s && cursor < *e {
+            let col = visual_width(&text[*s..cursor]);
+            return (row, col);
+        }
+    }
+    // Cursor is at or past the end of the last line.
+    let last_row = lines.len().saturating_sub(1);
+    let last = lines.get(last_row).copied().unwrap_or((0, 0));
+    let col = visual_width(&text[last.0..cursor.min(text.len())]);
+    (last_row, col)
+}
+
+/// Convert a visual (row, col) click into a byte index inside `text`.
+pub fn visual_pos_to_byte_index(text: &str, row: usize, col: usize, width: u16) -> usize {
+    let lines = wrap_text(text, width);
+    let (start, end) = lines.get(row).copied().unwrap_or((text.len(), text.len()));
+    let mut current_col = 0usize;
+    for (idx, c) in text[start..end].char_indices() {
+        let cw = unicode_width::UnicodeWidthChar::width(c).unwrap_or(1);
+        if current_col + cw > col {
+            return start + idx;
+        }
+        current_col += cw;
+    }
+    end
+}
+
+/// Ensure the cursor is visible by adjusting `task_scroll`.
+fn auto_scroll(app: &mut App, width: u16) {
+    let (row, _) = byte_index_to_visual_pos(&app.task_input, app.task_cursor, width);
+    let visible_height = app
+        .task_input_rect
+        .map(|r| r.height as usize)
+        .unwrap_or(1);
+    if row < app.task_scroll {
+        app.task_scroll = row;
+    } else if row >= app.task_scroll + visible_height {
+        app.task_scroll = row.saturating_sub(visible_height - 1);
+    }
+}
+
 /// Poll for an event and update the app state.
 /// Returns true if the app should continue running.
 pub fn handle_event(app: &mut App) -> std::io::Result<bool> {
@@ -74,6 +158,7 @@ fn handle_task_keys(app: &mut App, code: KeyCode, modifiers: KeyModifiers) {
     }
 
     let ctrl = modifiers.contains(KeyModifiers::CONTROL);
+    let width = app.task_input_rect.map(|r| r.width).unwrap_or(40);
 
     match code {
         KeyCode::Char(c) if !ctrl => {
@@ -81,14 +166,15 @@ fn handle_task_keys(app: &mut App, code: KeyCode, modifiers: KeyModifiers) {
             app.task_input.insert(pos, c);
             app.task_cursor = (pos + c.len_utf8()).min(app.task_input.len());
             app.task_input_focused = true;
+            auto_scroll(app, width);
         }
         KeyCode::Backspace if ctrl => {
-            // Delete word before cursor.
             let pos = app.task_cursor;
             let prev = prev_word_boundary(&app.task_input, pos);
             app.task_input.replace_range(prev..pos, "");
             app.task_cursor = prev;
             app.task_input_focused = true;
+            auto_scroll(app, width);
         }
         KeyCode::Backspace => {
             if app.task_cursor > 0 {
@@ -97,52 +183,92 @@ fn handle_task_keys(app: &mut App, code: KeyCode, modifiers: KeyModifiers) {
                 app.task_cursor = prev;
             }
             app.task_input_focused = true;
+            auto_scroll(app, width);
         }
         KeyCode::Delete if ctrl => {
-            // Delete word after cursor.
             let pos = app.task_cursor;
             let next = next_word_boundary(&app.task_input, pos);
             app.task_input.replace_range(pos..next, "");
             app.task_input_focused = true;
+            auto_scroll(app, width);
         }
         KeyCode::Delete => {
             let next = next_char_boundary(&app.task_input, app.task_cursor);
             app.task_input.replace_range(app.task_cursor..next, "");
             app.task_input_focused = true;
+            auto_scroll(app, width);
         }
         KeyCode::Left if ctrl => {
             app.task_cursor = prev_word_boundary(&app.task_input, app.task_cursor);
             app.task_input_focused = true;
+            auto_scroll(app, width);
         }
         KeyCode::Left => {
             app.task_cursor = prev_char_boundary(&app.task_input, app.task_cursor);
             app.task_input_focused = true;
+            auto_scroll(app, width);
         }
         KeyCode::Right if ctrl => {
             app.task_cursor = next_word_boundary(&app.task_input, app.task_cursor);
             app.task_input_focused = true;
+            auto_scroll(app, width);
         }
         KeyCode::Right => {
             app.task_cursor = next_char_boundary(&app.task_input, app.task_cursor);
             app.task_input_focused = true;
+            auto_scroll(app, width);
+        }
+        KeyCode::Up => {
+            let (row, col) = byte_index_to_visual_pos(&app.task_input, app.task_cursor, width);
+            if row > 0 {
+                app.task_cursor = visual_pos_to_byte_index(&app.task_input, row - 1, col, width);
+            } else {
+                app.task_cursor = 0;
+            }
+            app.task_input_focused = true;
+            auto_scroll(app, width);
+        }
+        KeyCode::Down => {
+            let lines = wrap_text(&app.task_input, width);
+            let (row, col) = byte_index_to_visual_pos(&app.task_input, app.task_cursor, width);
+            if row + 1 < lines.len() {
+                app.task_cursor = visual_pos_to_byte_index(&app.task_input, row + 1, col, width);
+            } else {
+                app.task_cursor = app.task_input.len();
+            }
+            app.task_input_focused = true;
+            auto_scroll(app, width);
         }
         KeyCode::Home => {
-            app.task_cursor = 0;
+            let (row, _) = byte_index_to_visual_pos(&app.task_input, app.task_cursor, width);
+            let lines = wrap_text(&app.task_input, width);
+            if let Some((s, _)) = lines.get(row) {
+                app.task_cursor = *s;
+            }
             app.task_input_focused = true;
+            auto_scroll(app, width);
         }
         KeyCode::End => {
-            app.task_cursor = app.task_input.len();
+            let (row, _) = byte_index_to_visual_pos(&app.task_input, app.task_cursor, width);
+            let lines = wrap_text(&app.task_input, width);
+            if let Some((_, e)) = lines.get(row) {
+                app.task_cursor = *e;
+            }
             app.task_input_focused = true;
+            auto_scroll(app, width);
         }
         KeyCode::Enter if ctrl => {
             app.execute_task();
             app.task_input.clear();
             app.task_cursor = 0;
+            app.task_scroll = 0;
         }
         KeyCode::Enter => {
-            app.execute_task();
-            app.task_input.clear();
-            app.task_cursor = 0;
+            let pos = app.task_cursor.min(app.task_input.len());
+            app.task_input.insert(pos, '\n');
+            app.task_cursor = pos + 1;
+            app.task_input_focused = true;
+            auto_scroll(app, width);
         }
         KeyCode::Esc => {
             app.task_input_focused = false;
@@ -303,8 +429,12 @@ fn handle_mouse(app: &mut App, kind: MouseEventKind, col: u16, row: u16) {
             } else if app.screen == Screen::Task && in_task_input {
                 let rect = app.task_input_rect.unwrap();
                 app.task_input_focused = true;
-                let click_x = col.saturating_sub(rect.x + 1) as usize;
-                app.task_cursor = visual_offset_to_byte_index(&app.task_input, click_x);
+                let click_row = (row as usize)
+                    .saturating_sub(rect.y as usize)
+                    + app.task_scroll;
+                let click_col = col.saturating_sub(rect.x) as usize;
+                app.task_cursor =
+                    visual_pos_to_byte_index(&app.task_input, click_row, click_col, rect.width);
             }
         }
         MouseEventKind::ScrollUp => {
@@ -335,14 +465,4 @@ fn handle_mouse(app: &mut App, kind: MouseEventKind, col: u16, row: u16) {
     }
 }
 
-/// Approximate conversion from visual column to byte index in a string.
-fn visual_offset_to_byte_index(s: &str, target_col: usize) -> usize {
-    let mut col = 0usize;
-    for (idx, c) in s.char_indices() {
-        if col >= target_col {
-            return idx;
-        }
-        col += unicode_width::UnicodeWidthChar::width(c).unwrap_or(1);
-    }
-    s.len()
-}
+

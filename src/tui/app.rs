@@ -78,6 +78,8 @@ pub struct App {
     pub file_scroll: usize,
     /// Cursor position inside `task_input` (byte index).
     pub task_cursor: usize,
+    /// Visual scroll offset for the multi-line task input (line index).
+    pub task_scroll: usize,
     /// Whether a task is currently running.
     pub running: bool,
     /// Last task result summary.
@@ -120,6 +122,7 @@ impl App {
             task_input: String::new(),
             task_cursor: 0,
             task_input_focused: false,
+            task_scroll: 0,
             log_scroll: 0,
             selected_file: None,
             file_scroll: 0,

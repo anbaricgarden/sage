@@ -10,6 +10,7 @@ use ratatui::{
 };
 
 use super::app::{App, LogLevel, Screen, StatusKind};
+use super::events::{byte_index_to_visual_pos, wrap_text};
 use crate::agent::orchestrator::OrchestratorState;
 
 // ── Palette ──
@@ -278,10 +279,10 @@ fn render_task(frame: &mut Frame, app: &mut App, area: Rect) {
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(3), // header
-            Constraint::Length(5), // input
-            Constraint::Length(3), // actions
-            Constraint::Min(0),    // result
+            Constraint::Length(3),  // header
+            Constraint::Length(12), // multi-line input
+            Constraint::Length(3),  // actions
+            Constraint::Min(0),     // result
         ])
         .split(area);
 
@@ -313,32 +314,48 @@ fn render_task(frame: &mut Frame, app: &mut App, area: Rect) {
         })
         .style(input_style);
 
-    let input_text: Text = if app.task_input.is_empty() && !app.task_input_focused {
-        Span::styled(
-            "Type a task and press Enter...",
-            Style::default().fg(TEXT_MUTED),
-        )
-        .into()
-    } else {
-        Span::styled(&app.task_input, Style::default().fg(TEXT)).into()
-    };
     let input_inner = chunks[1].inner(Margin::new(1, 1));
-    frame.render_widget(Paragraph::new(input_text).block(input_block), chunks[1]);
+    let width = input_inner.width;
+    let visible_height = input_inner.height as usize;
     app.task_input_rect = Some(input_inner);
+
+    // Compute wrapped lines and clamp scroll.
+    let wrapped = wrap_text(&app.task_input, width);
+    let total_lines = wrapped.len().max(1);
+    app.task_scroll = app.task_scroll.min(total_lines.saturating_sub(visible_height));
+
+    // Build visible lines.
+    let mut visible_lines: Vec<Line> = wrapped
+        .iter()
+        .skip(app.task_scroll)
+        .take(visible_height)
+        .map(|(s, e)| Line::from(Span::styled(&app.task_input[*s..*e], Style::default().fg(TEXT))))
+        .collect();
+
+    // Placeholder when empty and not focused.
+    if app.task_input.is_empty() && !app.task_input_focused && app.task_scroll == 0 {
+        visible_lines = vec![Line::from(Span::styled(
+            "Type a task and press Ctrl+Enter...",
+            Style::default().fg(TEXT_MUTED),
+        ))];
+    }
+
+    frame.render_widget(
+        Paragraph::new(Text::from(visible_lines)).block(input_block),
+        chunks[1],
+    );
 
     // Draw cursor.
     if app.task_input_focused {
-        let mut cursor_x = input_inner.x;
-        for (idx, c) in app.task_input.char_indices() {
-            if idx >= app.task_cursor {
-                break;
-            }
-            cursor_x += unicode_width::UnicodeWidthChar::width(c).unwrap_or(1) as u16;
+        let (cursor_row, cursor_col) = byte_index_to_visual_pos(&app.task_input, app.task_cursor, width);
+        let visible_cursor_row = cursor_row.saturating_sub(app.task_scroll);
+        if visible_cursor_row < visible_height {
+            let cursor_x = input_inner.x + cursor_col as u16;
+            let cursor_y = input_inner.y + visible_cursor_row as u16;
+            frame.set_cursor_position(Position::new(cursor_x, cursor_y));
         }
-        let cursor_y = input_inner.y;
-        frame.set_cursor_position(Position::new(cursor_x, cursor_y));
     } else {
-        // Park cursor at the start of the input box when unfocused so it doesn't drift.
+        // Park cursor at the start of the input box when unfocused.
         frame.set_cursor_position(Position::new(input_inner.x, input_inner.y));
     }
 
@@ -352,7 +369,7 @@ fn render_task(frame: &mut Frame, app: &mut App, area: Rect) {
         ])
     } else {
         Line::from(vec![
-            Span::styled("Enter ", Style::default().fg(TEXT_SECONDARY)),
+            Span::styled("Ctrl+Enter ", Style::default().fg(TEXT_SECONDARY)),
             Span::styled("Submit", Style::default().fg(ACCENT).add_modifier(Modifier::BOLD)),
             Span::styled("  |  ", Style::default().fg(TEXT_MUTED)),
             Span::styled("Ctrl+C", Style::default().fg(ACCENT)),
@@ -615,7 +632,7 @@ fn render_status_bar(frame: &mut Frame, app: &App, area: Rect) {
             (text.as_str(), c)
         }
         None => {
-            let hint = "Tab/1-5 Navigate  |  Enter Submit  |  ↑↓ Scroll  |  Ctrl+C Quit";
+            let hint = "Tab/1-5 Navigate  |  Ctrl+Enter Submit  |  ↑↓ Scroll  |  Ctrl+C Quit";
             (hint, TEXT_MUTED)
         }
     };
