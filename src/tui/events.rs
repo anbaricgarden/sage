@@ -486,19 +486,36 @@ fn handle_mouse(app: &mut App, kind: MouseEventKind, col: u16, row: u16) {
             }
         }
         MouseEventKind::Moved => {
-            if app.screen == Screen::Settings {
-                let in_settings = app.settings_rect.is_some_and(|r| contains(r, col, row));
-                if in_settings {
-                    let rect = app.settings_rect.unwrap();
-                    let idx = (row as usize).saturating_sub(rect.y as usize);
-                    const SETTINGS_COUNT: usize = 4;
-                    if idx < SETTINGS_COUNT {
-                        app.settings_hover = Some(idx);
-                    } else {
-                        app.settings_hover = None;
-                    }
-                } else {
-                    app.settings_hover = None;
+            // Clear all hover states first, then set whichever applies.
+            app.sidebar_hover = None;
+            app.file_hover = None;
+            app.settings_hover = None;
+
+            let in_sidebar = app.sidebar_rect.is_some_and(|r| contains(r, col, row));
+            let in_file_tree = app.file_tree_rect.is_some_and(|r| contains(r, col, row));
+            let in_settings = app.settings_rect.is_some_and(|r| contains(r, col, row));
+
+            if in_sidebar {
+                let rect = app.sidebar_rect.unwrap();
+                let idx = (row as usize).saturating_sub(rect.y as usize);
+                let screens = Screen::all();
+                if idx < screens.len() {
+                    app.sidebar_hover = Some(idx);
+                }
+            } else if app.screen == Screen::Files && in_file_tree {
+                let rect = app.file_tree_rect.unwrap();
+                let idx = (row as usize).saturating_sub(rect.y as usize);
+                let mut files: Vec<String> = app.orchestrator.file_contents.keys().cloned().collect();
+                files.sort();
+                if idx < files.len() {
+                    app.file_hover = Some(idx);
+                }
+            } else if app.screen == Screen::Settings && in_settings {
+                let rect = app.settings_rect.unwrap();
+                let idx = (row as usize).saturating_sub(rect.y as usize);
+                const SETTINGS_COUNT: usize = 4;
+                if idx < SETTINGS_COUNT {
+                    app.settings_hover = Some(idx);
                 }
             }
         }

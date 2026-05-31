@@ -100,6 +100,7 @@ fn render_sidebar(frame: &mut Frame, app: &mut App, area: Rect) {
         .enumerate()
         .map(|(i, screen)| {
             let is_active = *screen == app.screen;
+            let is_hovered = app.sidebar_hover == Some(i);
             let shortcut = format!("{}", i + 1);
             let label = screen.title();
             let style = if is_active {
@@ -107,6 +108,8 @@ fn render_sidebar(frame: &mut Frame, app: &mut App, area: Rect) {
                     .fg(ACCENT_BRIGHT)
                     .bg(SURFACE)
                     .add_modifier(Modifier::BOLD)
+            } else if is_hovered {
+                Style::default().fg(TEXT).bg(SURFACE_HOVER)
             } else {
                 Style::default().fg(TEXT_SECONDARY)
             };
@@ -422,7 +425,7 @@ fn render_files(frame: &mut Frame, app: &mut App, area: Rect) {
         .enumerate()
         .map(|(i, path)| {
             let is_selected = app.selected_file.as_ref() == Some(path);
-            let is_hovered = i == app.file_scroll;
+            let is_hovered = app.file_hover == Some(i);
             let style = if is_selected {
                 Style::default().fg(ACCENT_BRIGHT).bg(SURFACE).add_modifier(Modifier::BOLD)
             } else if is_hovered {
