@@ -1117,6 +1117,10 @@ fn handle_mouse(app: &mut App, kind: MouseEventKind, col: u16, row: u16) {
                     return;
                 }
             }
+            // Only copy on single-click + drag, not on double-/triple-click.
+            if app.click_count > 1 {
+                return;
+            }
             if let Some(sel) = app.selection.take() {
                 let (start, end) = (sel.start.min(sel.end), sel.start.max(sel.end));
                 if end > start {
