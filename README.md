@@ -1,0 +1,105 @@
+# sage — Token-Efficient Coding Agent
+
+A multi-agent coding system designed from first principles to minimize both input context tokens and output generation tokens at every architectural layer.
+
+## Architecture
+
+```
+sage/
+├── src/
+│   ├── main.rs              # CLI entry point (demo)
+│   ├── lib.rs               # Library root — re-exports all modules
+│   ├── blob_store.rs        # SHA-256 content-addressed blob storage
+│   ├── diff/
+│   │   ├── mod.rs           # Diff module root
+│   │   ├── format.rs        # EditBlock + anchor hash computation
+│   │   ├── parser.rs        # Hash-anchored diff block parser
+│   │   └── applicator.rs    # Progressive context expansion matcher
+│   ├── ast/
+│   │   ├── mod.rs           # Symbol + SymbolKind definitions
+│   │   └── parser.rs        # Tree-sitter symbol extraction
+│   └── agent/
+│       ├── mod.rs           # Agent trait
+│       └── editor.rs        # Rule-based diff generation
+├── tests/
+│   └── integration_tests.rs # End-to-end tests for all modules
+└── spec.md                  # Full engineering specification
+```
+
+## Modules
+
+### `blob_store` — Content-Addressed Storage
+
+- `BlobStore::put(content)` → SHA-256 hex hash (64 chars)
+- `BlobStore::get(hash)` → retrieve bytes by hash
+- `BlobStore::contains(hash)` → O(1) existence check
+- Automatic deduplication: identical content always yields the same hash
+
+### `diff` — Hash-Anchored Edit Format
+
+**Format:**
+
+```text
+<<<<<<< HEAD:{old_anchor}
+{unchanged context lines}
+=======
+{new lines}
+>>>>>>> {new_anchor}
+```
+
+- **Anchor hash:** first 8 characters of `SHA-256(file_path + "\n" + context_lines)`
+- **Parser:** extracts `EditBlock`s from diff text via regex
+- **Applicator:** progressive context expansion (3→5→10→20 lines) to resolve ambiguous anchors; falls back to first match if still ambiguous
+
+### `ast` — Tree-Sitter Symbol Extraction
+
+- Supports Python, JavaScript, TypeScript, Go
+- Extracts: functions, classes, methods, structs, interfaces, types, constants
+- Returns `Symbol` structs with name, kind, line range, signature, docstring
+
+### `agent/editor` — Basic Rule-Based Editor
+
+- Parses natural-language tasks (e.g. "Change 'X' to 'Y'")
+- Generates `EditBlock`s with proper anchor hashes
+- Heuristic fallback for quoted-string replacement when literal match fails
+
+## Build & Run
+
+```bash
+# Build
+cargo build --release
+
+# Run the CLI demo
+cargo run
+
+# Run tests
+cargo test
+
+# Lint
+cargo clippy -- -D warnings
+```
+
+## Test Coverage
+
+14 integration tests covering:
+
+- Blob store round-trip & deduplication
+- EditBlock anchor hash computation
+- Diff parser (single & multiple blocks)
+- Diff applicator (single-line change, line insertion, ambiguous anchor expansion, trailing newline preservation)
+- AST parser (Python functions/classes, JavaScript functions)
+- Editor agent (single-line fix, line addition)
+
+## Roadmap
+
+| Phase | Deliverable | Status |
+|---|---|---|
+| 1 | Foundation: blob store, diff format/parser/applicator, AST parser, Editor agent | **✅ Done** |
+| 2 | Context Intelligence: CodeGraph with pageRank, hybrid retrieval | Planned |
+| 3 | Multi-Agent Orchestration: Planner, Executor, Reviewer agents | Planned |
+| 4 | Inference Optimization: speculative decoding, prefix caching, KV quantization | Planned |
+| 5 | Polish & Fine-Tuning: prompt compression, model fine-tuning, metrics dashboard | Planned |
+
+## License
+
+See `LICENSE.md`.
