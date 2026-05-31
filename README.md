@@ -106,7 +106,7 @@ cargo clippy -- -D warnings
 |---|---|---|
 | 1 | Foundation: blob store, diff format/parser/applicator, AST parser, Editor agent | **✅ Done** |
 | 2 | Context Intelligence: CodeGraph with pageRank, hybrid retrieval, ContextAssembler, RepoMap | **✅ Done** |
-| 3 | Multi-Agent Orchestration: Planner, Executor, Reviewer agents | Planned |
+| 3 | Multi-Agent Orchestration: Planner, Executor, Reviewer agents, Orchestrator state machine | **✅ Done** |
 | 4 | Polish and Metrics: prompt compression, token accounting dashboard, benchmarks | Planned |
 
 ## License
