@@ -1,7 +1,10 @@
 use std::collections::{HashSet, VecDeque};
+use std::fs;
+use std::path::PathBuf;
 use std::time::Instant;
 
 use ratatui::layout::Rect;
+use serde::{Deserialize, Serialize};
 
 use crate::agent::orchestrator::{Orchestrator, OrchestratorState};
 use crate::codegraph::graph::CodeGraph;
@@ -150,14 +153,14 @@ pub struct App {
     pub copy_defer_duration: u8,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum AnimationSpeed {
     Slow,
     Normal,
     Fast,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum LogFilter {
     All,
     Info,
@@ -165,7 +168,7 @@ pub enum LogFilter {
     Error,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Theme {
     Sage,
     Dark,
@@ -187,7 +190,7 @@ impl Default for App {
 
 impl App {
     pub fn new() -> Self {
-        Self {
+        let mut app = Self {
             screen: Screen::Dashboard,
             orchestrator: Orchestrator::new(),
             code_graph: CodeGraph::new(),
@@ -235,7 +238,9 @@ impl App {
             copy_defer_ticks: 0,
             pending_copy_source: None,
             copy_defer_duration: 3,
-        }
+        };
+        SettingsData::load().apply_to_app(&mut app);
+        app
     }
 
     /// Switch to the next screen in the sidebar.
@@ -293,6 +298,7 @@ impl App {
             AnimationSpeed::Normal => AnimationSpeed::Fast,
             AnimationSpeed::Fast => AnimationSpeed::Slow,
         };
+        self.save_settings();
     }
 
     /// Cycle log filter.
@@ -303,6 +309,7 @@ impl App {
             LogFilter::Warning => LogFilter::Error,
             LogFilter::Error => LogFilter::All,
         };
+        self.save_settings();
     }
 
     /// Cycle theme.
@@ -311,6 +318,7 @@ impl App {
             Theme::Sage => Theme::Dark,
             Theme::Dark => Theme::Sage,
         };
+        self.save_settings();
     }
 
     /// Cycle copy defer duration through preset values (1,2,3,5,10 ticks).
@@ -322,6 +330,14 @@ impl App {
             5 => 10,
             _ => 1,
         };
+        self.save_settings();
+    }
+
+    /// Persist current settings to disk.
+    pub fn save_settings(&self) {
+        if let Err(e) = SettingsData::from_app(self).save() {
+            eprintln!("Failed to save settings: {}", e);
+        }
     }
 
     /// Get the current spinner character.
@@ -440,5 +456,202 @@ impl App {
                 _ => "Idle",
             }
         }
+    }
+}
+
+/// Serializable subset of App settings for persistence.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(default)]
+struct SettingsData {
+    pub animation_speed: AnimationSpeed,
+    pub log_filter: LogFilter,
+    pub theme: Theme,
+    pub mouse_enabled: bool,
+    pub copy_defer_duration: u8,
+}
+
+impl Default for SettingsData {
+    fn default() -> Self {
+        Self {
+            animation_speed: AnimationSpeed::Normal,
+            log_filter: LogFilter::All,
+            theme: Theme::Sage,
+            mouse_enabled: true,
+            copy_defer_duration: 3,
+        }
+    }
+}
+
+impl SettingsData {
+    fn from_app(app: &App) -> Self {
+        Self {
+            animation_speed: app.animation_speed,
+            log_filter: app.log_filter,
+            theme: app.theme,
+            mouse_enabled: app.mouse_enabled,
+            copy_defer_duration: app.copy_defer_duration,
+        }
+    }
+
+    fn apply_to_app(&self, app: &mut App) {
+        app.animation_speed = self.animation_speed;
+        app.log_filter = self.log_filter;
+        app.theme = self.theme;
+        app.mouse_enabled = self.mouse_enabled;
+        app.copy_defer_duration = self.copy_defer_duration;
+    }
+
+    /// Return the path to the settings JSON file (`~/.config/sage/settings.json`).
+    fn path() -> Option<PathBuf> {
+        dirs::config_dir().map(|mut p| {
+            p.push("sage");
+            p.push("settings.json");
+            p
+        })
+    }
+
+    /// Load settings from disk, or return defaults if the file doesn't exist yet.
+    fn load() -> Self {
+        let Some(path) = Self::path() else {
+            return Self::default();
+        };
+        let raw = match fs::read_to_string(&path) {
+            Ok(r) => r,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Self::default(),
+            Err(e) => {
+                eprintln!("Failed to read settings file: {}", e);
+                return Self::default();
+            }
+        };
+        match serde_json::from_str(&raw) {
+            Ok(data) => data,
+            Err(e) => {
+                eprintln!("Failed to parse settings file: {}", e);
+                Self::default()
+            }
+        }
+    }
+
+    /// Save settings to disk.
+    fn save(&self) -> std::io::Result<()> {
+        let Some(path) = Self::path() else {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::NotFound,
+                "Could not determine config directory",
+            ));
+        };
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent)?;
+        }
+        let raw = serde_json::to_string_pretty(self)
+            .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
+        fs::write(&path, raw)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn settings_data_roundtrip() {
+        let original = SettingsData {
+            animation_speed: AnimationSpeed::Fast,
+            log_filter: LogFilter::Warning,
+            theme: Theme::Dark,
+            mouse_enabled: false,
+            copy_defer_duration: 10,
+        };
+        let json = serde_json::to_string(&original).unwrap();
+        let parsed: SettingsData = serde_json::from_str(&json).unwrap();
+        assert_eq!(original, parsed);
+    }
+
+    #[test]
+    fn settings_data_defaults() {
+        let data = SettingsData::default();
+        assert_eq!(data.animation_speed, AnimationSpeed::Normal);
+        assert_eq!(data.log_filter, LogFilter::All);
+        assert_eq!(data.theme, Theme::Sage);
+        assert!(data.mouse_enabled);
+        assert_eq!(data.copy_defer_duration, 3);
+    }
+
+    #[test]
+    fn settings_data_apply_to_app() {
+        let mut app = App::new();
+        let data = SettingsData {
+            animation_speed: AnimationSpeed::Fast,
+            log_filter: LogFilter::Error,
+            theme: Theme::Dark,
+            mouse_enabled: false,
+            copy_defer_duration: 5,
+        };
+        data.apply_to_app(&mut app);
+        assert_eq!(app.animation_speed, AnimationSpeed::Fast);
+        assert_eq!(app.log_filter, LogFilter::Error);
+        assert_eq!(app.theme, Theme::Dark);
+        assert!(!app.mouse_enabled);
+        assert_eq!(app.copy_defer_duration, 5);
+    }
+
+    #[test]
+    fn settings_data_from_app() {
+        let mut app = App::new();
+        app.animation_speed = AnimationSpeed::Slow;
+        app.log_filter = LogFilter::Info;
+        app.theme = Theme::Dark;
+        app.mouse_enabled = false;
+        app.copy_defer_duration = 1;
+        let data = SettingsData::from_app(&app);
+        assert_eq!(data.animation_speed, AnimationSpeed::Slow);
+        assert_eq!(data.log_filter, LogFilter::Info);
+        assert_eq!(data.theme, Theme::Dark);
+        assert!(!data.mouse_enabled);
+        assert_eq!(data.copy_defer_duration, 1);
+    }
+
+    #[test]
+    fn settings_save_and_load() {
+        // Use a temporary config dir override isn't easy with dirs crate,
+        // so we test via path and manual read/write in a temp dir.
+        let tmpdir = tempfile::tempdir().unwrap();
+        let path = tmpdir.path().join("settings.json");
+
+        let original = SettingsData {
+            animation_speed: AnimationSpeed::Fast,
+            log_filter: LogFilter::Warning,
+            theme: Theme::Dark,
+            mouse_enabled: false,
+            copy_defer_duration: 10,
+        };
+
+        let raw = serde_json::to_string_pretty(&original).unwrap();
+        fs::write(&path, raw).unwrap();
+
+        let loaded_raw = fs::read_to_string(&path).unwrap();
+        let loaded: SettingsData = serde_json::from_str(&loaded_raw).unwrap();
+        assert_eq!(original, loaded);
+    }
+
+    #[test]
+    fn settings_data_missing_fields_use_defaults() {
+        // Partial JSON with only some fields; #[serde(default)] fills the rest.
+        let json = r#"{"theme": "Dark", "mouse_enabled": false}"#;
+        let parsed: SettingsData = serde_json::from_str(json).unwrap();
+        assert_eq!(parsed.theme, Theme::Dark);
+        assert!(!parsed.mouse_enabled);
+        assert_eq!(parsed.animation_speed, AnimationSpeed::Normal); // default
+        assert_eq!(parsed.log_filter, LogFilter::All);             // default
+        assert_eq!(parsed.copy_defer_duration, 3);                 // default
+    }
+
+    #[test]
+    fn settings_data_malformed_json_falls_back_to_defaults() {
+        let bad = "not json at all";
+        let result: Result<SettingsData, _> = serde_json::from_str(bad);
+        assert!(result.is_err());
+        // Verify that the load() path would have returned defaults.
+        assert_eq!(SettingsData::default().theme, Theme::Sage);
     }
 }

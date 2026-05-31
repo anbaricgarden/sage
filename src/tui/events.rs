@@ -765,7 +765,10 @@ fn handle_settings_keys(app: &mut App, code: KeyCode) {
         KeyCode::Enter | KeyCode::Char(' ') => {
             match app.settings_cursor {
                 0 => app.toggle_animation_speed(),
-                1 => app.mouse_enabled = !app.mouse_enabled,
+                1 => {
+                    app.mouse_enabled = !app.mouse_enabled;
+                    app.save_settings();
+                }
                 2 => app.toggle_log_filter(),
                 3 => app.toggle_theme(),
                 4 => app.toggle_copy_defer_duration(),
@@ -1070,7 +1073,10 @@ fn handle_mouse_down(
             app.settings_hover = Some(idx);
             match idx {
                 0 => app.toggle_animation_speed(),
-                1 => app.mouse_enabled = !app.mouse_enabled,
+                1 => {
+                    app.mouse_enabled = !app.mouse_enabled;
+                    app.save_settings();
+                }
                 2 => app.toggle_log_filter(),
                 3 => app.toggle_theme(),
                 4 => app.toggle_copy_defer_duration(),
