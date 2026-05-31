@@ -79,7 +79,10 @@ sage/
 # Build
 cargo build --release
 
-# Run the CLI demo
+# Run the TUI dashboard
+cargo run -- --tui
+
+# Run the CLI demo (default)
 cargo run
 
 # Run tests
@@ -88,6 +91,20 @@ cargo test
 # Lint
 cargo clippy -- -D warnings
 ```
+
+### TUI Dashboard
+
+`sage --tui` launches a rich terminal interface with five screens:
+
+| Screen | Content |
+|---|---|
+| **Dashboard (1)** | Orchestrator state machine, agent status cards, token ledger |
+| **Task (2)** | Input coding tasks and watch the multi-agent pipeline execute |
+| **Files (3)** | File tree with syntax-highlighted content viewer |
+| **Logs (4)** | Scrollable agent/system log history |
+| **Graph (5)** | CodeGraph stats + symbol list ranked by pageRank |
+
+Keyboard shortcuts: `1-5` navigate screens, `Tab`/`BackTab` cycle, `Ctrl+Q` quit, `↑↓`/`j`/`k` scroll, `Enter` submit tasks.
 
 ## Test Coverage
 
@@ -107,7 +124,7 @@ cargo clippy -- -D warnings
 | 1 | Foundation: blob store, diff format/parser/applicator, AST parser, Editor agent | **✅ Done** |
 | 2 | Context Intelligence: CodeGraph with pageRank, hybrid retrieval, ContextAssembler, RepoMap | **✅ Done** |
 | 3 | Multi-Agent Orchestration: Planner, Executor, Reviewer agents, Orchestrator state machine | **✅ Done** |
-| 4 | Polish and Metrics: prompt compression, token accounting dashboard, benchmarks | Planned |
+| 4 | Polish and Metrics: TUI dashboard, prompt compression, token accounting, benchmarks | **✅ Done** |
 
 ## License
 
