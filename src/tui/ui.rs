@@ -872,6 +872,10 @@ fn render_settings(frame: &mut Frame, app: &mut App, area: Rect) {
             "Theme",
             format!("{:?}", app.theme),
         ),
+        (
+            "Copy Defer",
+            format!("{}00 ms", app.copy_defer_duration),
+        ),
     ];
 
     // Reserve space for the hint at the bottom.

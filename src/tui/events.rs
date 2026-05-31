@@ -754,7 +754,7 @@ fn handle_log_keys(app: &mut App, code: KeyCode) {
 }
 
 fn handle_settings_keys(app: &mut App, code: KeyCode) {
-    const SETTINGS_COUNT: usize = 4;
+    const SETTINGS_COUNT: usize = 5;
     match code {
         KeyCode::Up | KeyCode::Char('k') => {
             app.settings_cursor = app.settings_cursor.saturating_sub(1);
@@ -768,6 +768,7 @@ fn handle_settings_keys(app: &mut App, code: KeyCode) {
                 1 => app.mouse_enabled = !app.mouse_enabled,
                 2 => app.toggle_log_filter(),
                 3 => app.toggle_theme(),
+                4 => app.toggle_copy_defer_duration(),
                 _ => {}
             }
         }
@@ -983,293 +984,661 @@ fn handle_mouse(app: &mut App, kind: MouseEventKind, col: u16, row: u16) {
 
     match kind {
         MouseEventKind::Down(_) => {
-            // Cancel any pending deferred copy when the user clicks again.
-            app.copy_defer_ticks = 0;
-            app.pending_copy_source = None;
-
-            let clicks = update_click_tracking(app, col, row);
-
-            // Start a new selection if clicking inside a text area.
-            if app.screen == Screen::Task && in_task_input {
-                let rect = app.task_input_rect.unwrap();
-                let idx = byte_index_at_click(&app.task_input, rect, app.task_scroll, col, row);
-                let (start, end) = if clicks == 3 {
-                    select_wrapped_line(&app.task_input, idx, rect.width)
-                } else if clicks == 2 {
-                    select_word(&app.task_input, idx)
-                } else {
-                    (idx, idx)
-                };
-                app.selection = Some(TextSelection {
-                    source: SelectionSource::TaskInput,
-                    start,
-                    end,
-                });
-                app.task_cursor = end;
-                app.task_input_focused = true;
-                app.copy_flash_ticks = 0;
-            } else if app.screen == Screen::Task && in_result {
-                if let Some(result) = &app.last_result {
-                    let rect = app.result_rect.unwrap();
-                    let idx = byte_index_at_click(result, rect, app.result_scroll, col, row);
-                    let (start, end) = if clicks == 3 {
-                        select_wrapped_line(result, idx, rect.width)
-                    } else if clicks == 2 {
-                        select_word(result, idx)
-                    } else {
-                        (idx, idx)
-                    };
-                    app.selection = Some(TextSelection {
-                        source: SelectionSource::Result,
-                        start,
-                        end,
-                    });
-                    app.copy_flash_ticks = 0;
-                }
-            } else if app.screen == Screen::Files && in_file_content {
-                if let Some(content) = app.selected_file.as_ref().and_then(|f| app.orchestrator.file_contents.get(f)) {
-                    let rect = app.file_content_rect.unwrap();
-                    let idx = byte_index_at_click(content, rect, app.file_content_scroll, col, row);
-                    let (start, end) = if clicks == 3 {
-                        select_wrapped_line(content, idx, rect.width)
-                    } else if clicks == 2 {
-                        select_word(content, idx)
-                    } else {
-                        (idx, idx)
-                    };
-                    app.selection = Some(TextSelection {
-                        source: SelectionSource::FileContent,
-                        start,
-                        end,
-                    });
-                    app.copy_flash_ticks = 0;
-                }
-            } else if app.screen == Screen::Files && app.file_filter_rect.is_some_and(|r| contains(r, col, row)) {
-                let rect = app.file_filter_rect.unwrap();
-                let click_col = col.saturating_sub(rect.x) as usize;
-                let idx = click_col.min(app.file_filter.len());
-                let (start, end) = if clicks == 3 {
-                    (0, app.file_filter.len())
-                } else if clicks == 2 {
-                    select_word(&app.file_filter, idx)
-                } else {
-                    (idx, idx)
-                };
-                app.selection = Some(TextSelection {
-                    source: SelectionSource::FileFilter,
-                    start,
-                    end,
-                });
-                app.file_filter_focused = true;
-                app.file_filter_cursor = end;
-                app.copy_flash_ticks = 0;
-            } else {
-                // Click outside any text area: clear selection.
-                app.selection = None;
-                app.copy_flash_ticks = 0;
-                app.click_count = 0;
-            }
-
-            // Existing click handlers (sidebar, file tree, settings, filter, task input cursor).
-            if in_sidebar {
-
-                let rect = app.sidebar_rect.unwrap();
-                let idx = (row as usize).saturating_sub(rect.y as usize);
-                let screens = Screen::all();
-                if idx < screens.len() {
-                    app.screen = screens[idx];
-                }
-            } else if app.screen == Screen::Files && in_file_tree {
-                let rect = app.file_tree_rect.unwrap();
-                let idx = (row as usize).saturating_sub(rect.y as usize);
-                let paths: Vec<String> = app.orchestrator.file_contents.keys().cloned().collect();
-                let visible = build_visible_tree(&paths, &app.expanded_dirs, &app.file_filter);
-                if idx < visible.len() {
-                    app.file_scroll = idx;
-                    let entry = &visible[idx];
-                    if entry.is_dir {
-                        if entry.is_expanded {
-                            app.expanded_dirs.remove(&entry.path);
-                        } else {
-                            app.expanded_dirs.insert(entry.path.clone());
-                        }
-                    } else {
-                        app.selected_file = Some(entry.path.clone());
-                    }
-                }
-            } else if app.screen == Screen::Task && in_task_input && app.selection.is_none() {
-                // Only place cursor if we didn't start a selection (selection start
-                // is handled above before this branch).
-                let rect = app.task_input_rect.unwrap();
-                app.task_input_focused = true;
-                let click_row = (row as usize)
-                    .saturating_sub(rect.y as usize)
-                    + app.task_scroll;
-                let click_col = col.saturating_sub(rect.x) as usize;
-                app.task_cursor =
-                    visual_pos_to_byte_index(&app.task_input, click_row, click_col, rect.width);
-            } else if app.screen == Screen::Settings && in_settings {
-                let rect = app.settings_rect.unwrap();
-                let idx = (row as usize).saturating_sub(rect.y as usize);
-                const SETTINGS_COUNT: usize = 4;
-                if idx < SETTINGS_COUNT {
-                    app.settings_cursor = idx;
-                    app.settings_hover = Some(idx);
-                    match idx {
-                        0 => app.toggle_animation_speed(),
-                        1 => app.mouse_enabled = !app.mouse_enabled,
-                        2 => app.toggle_log_filter(),
-                        3 => app.toggle_theme(),
-                        _ => {}
-                    }
-                }
-            }
+            handle_mouse_down(app, col, row, in_sidebar, in_file_tree, in_task_input, in_settings, in_result, in_file_content);
         }
         MouseEventKind::Drag(_) => {
-            if let Some(sel) = &mut app.selection {
-                let idx = match sel.source {
-                    SelectionSource::TaskInput => {
-                        byte_index_at_click(&app.task_input, app.task_input_rect.unwrap(), app.task_scroll, col, row)
-                    }
-                    SelectionSource::Result => {
-                        if let Some(result) = &app.last_result {
-                            byte_index_at_click(result, app.result_rect.unwrap(), app.result_scroll, col, row)
-                        } else {
-                            return;
-                        }
-                    }
-                    SelectionSource::FileContent => {
-                        if let Some(content) = app.selected_file.as_ref().and_then(|f| app.orchestrator.file_contents.get(f)) {
-                            byte_index_at_click(content, app.file_content_rect.unwrap(), app.file_content_scroll, col, row)
-                        } else {
-                            return;
-                        }
-                    }
-                    SelectionSource::FileFilter => {
-                        let rect = app.file_filter_rect.unwrap();
-                        let click_col = col.saturating_sub(rect.x) as usize;
-                        click_col.min(app.file_filter.len())
-                    }
-                };
-                sel.end = idx;
-            }
+            handle_mouse_drag(app, col, row);
         }
         MouseEventKind::Up(_) => {
-            if let Some(sel) = app.selection.as_ref() {
-                // Input boxes: keep selection for editing, do NOT copy.
-                if sel.source == SelectionSource::TaskInput || sel.source == SelectionSource::FileFilter {
-                    return;
-                }
-                let (start, end) = (sel.start.min(sel.end), sel.start.max(sel.end));
-                if end > start && app.click_count > 1 {
-                    // Defer copy for multi-click to avoid duplicate clipboard entries.
-                    app.copy_defer_ticks = 3; // ~300ms at 100ms tick rate
-                    app.pending_copy_source = Some(sel.source);
-                    return;
-                }
-            }
-            if let Some(sel) = app.selection.take() {
-                let (start, end) = (sel.start.min(sel.end), sel.start.max(sel.end));
-                if end > start {
-                    let text = match sel.source {
-                        SelectionSource::TaskInput => app.task_input[start..end].to_string(),
-                        SelectionSource::Result => {
-                            app.last_result.as_ref().map(|r| r[start..end].to_string()).unwrap_or_default()
-                        }
-                        SelectionSource::FileContent => {
-                            app.selected_file.as_ref()
-                                .and_then(|f| app.orchestrator.file_contents.get(f))
-                                .map(|c| c[start..end].to_string())
-                                .unwrap_or_default()
-                        }
-                        SelectionSource::FileFilter => app.file_filter[start..end].to_string(),
-                    };
-                    copy_to_clipboard(&text);
-                    app.set_status("Copied to clipboard!", crate::tui::app::StatusKind::Success);
-                    // Keep selection visible for the flash duration.
-                    app.selection = Some(TextSelection {
-                        source: sel.source,
-                        start,
-                        end,
-                    });
-                    app.copy_flash_ticks = 5;
-                }
-            }
+            handle_mouse_up(app);
         }
         MouseEventKind::Moved => {
-            // Clear all hover states first, then set whichever applies.
-            app.sidebar_hover = None;
-            app.file_hover = None;
-            app.settings_hover = None;
-
-            let in_sidebar = app.sidebar_rect.is_some_and(|r| contains(r, col, row));
-            let in_file_tree = app.file_tree_rect.is_some_and(|r| contains(r, col, row));
-            let in_settings = app.settings_rect.is_some_and(|r| contains(r, col, row));
-
-            if in_sidebar {
-                let rect = app.sidebar_rect.unwrap();
-                let idx = (row as usize).saturating_sub(rect.y as usize);
-                let screens = Screen::all();
-                if idx < screens.len() {
-                    app.sidebar_hover = Some(idx);
-                }
-            } else if app.screen == Screen::Files && in_file_tree {
-                let rect = app.file_tree_rect.unwrap();
-                let idx = (row as usize).saturating_sub(rect.y as usize);
-                let paths: Vec<String> = app.orchestrator.file_contents.keys().cloned().collect();
-                let visible = build_visible_tree(&paths, &app.expanded_dirs, &app.file_filter);
-                if idx < visible.len() {
-                    app.file_hover = Some(idx);
-                }
-            } else if app.screen == Screen::Settings && in_settings {
-                let rect = app.settings_rect.unwrap();
-                let idx = (row as usize).saturating_sub(rect.y as usize);
-                const SETTINGS_COUNT: usize = 4;
-                if idx < SETTINGS_COUNT {
-                    app.settings_hover = Some(idx);
-                }
-            }
+            handle_mouse_moved(app, col, row, in_sidebar, in_file_tree, in_settings);
         }
         MouseEventKind::ScrollUp => {
-            if app.screen == Screen::Logs {
-                app.log_scroll = app.log_scroll.saturating_sub(3);
-            } else if app.screen == Screen::Files && in_file_tree {
-                let paths: Vec<String> = app.orchestrator.file_contents.keys().cloned().collect();
-                let visible = build_visible_tree(&paths, &app.expanded_dirs, &app.file_filter);
-                if !visible.is_empty() && app.file_scroll > 0 {
-                    app.file_scroll -= 1;
-                    if let Some(entry) = visible.get(app.file_scroll) && !entry.is_dir {
-                        app.selected_file = Some(entry.path.clone());
-                    }
-                }
-            } else if app.screen == Screen::Files && in_file_content {
-                app.file_content_scroll = app.file_content_scroll.saturating_sub(3);
-            } else if app.screen == Screen::Task && in_result {
-                app.result_scroll = app.result_scroll.saturating_sub(3);
-            }
+            handle_mouse_scroll(app, in_file_tree, in_file_content, in_result, -1);
         }
         MouseEventKind::ScrollDown => {
-            if app.screen == Screen::Logs {
-                app.log_scroll = (app.log_scroll + 3).min(app.logs.len().saturating_sub(1));
-            } else if app.screen == Screen::Files && in_file_tree {
-                let paths: Vec<String> = app.orchestrator.file_contents.keys().cloned().collect();
-                let visible = build_visible_tree(&paths, &app.expanded_dirs, &app.file_filter);
-                if app.file_scroll + 1 < visible.len() {
-                    app.file_scroll += 1;
-                    if let Some(entry) = visible.get(app.file_scroll) && !entry.is_dir {
-                        app.selected_file = Some(entry.path.clone());
-                    }
-                }
-            } else if app.screen == Screen::Files && in_file_content && let Some(content) = app.selected_file.as_ref().and_then(|f| app.orchestrator.file_contents.get(f)) {
-                let total = wrap_text(content, app.file_content_rect.map(|r| r.width).unwrap_or(40)).len();
-                app.file_content_scroll = (app.file_content_scroll + 3).min(total.saturating_sub(1));
-            } else if app.screen == Screen::Task && in_result && let Some(result) = &app.last_result {
-                let total = wrap_text(result, app.result_rect.map(|r| r.width).unwrap_or(40)).len();
-                app.result_scroll = (app.result_scroll + 3).min(total.saturating_sub(1));
-            }
+            handle_mouse_scroll(app, in_file_tree, in_file_content, in_result, 1);
         }
         _ => {}
     }
 }
 
+/// Handle mouse button down: start text selection, navigate UI, or place cursor.
+#[allow(clippy::too_many_arguments)]
+fn handle_mouse_down(
+    app: &mut App,
+    col: u16,
+    row: u16,
+    in_sidebar: bool,
+    in_file_tree: bool,
+    in_task_input: bool,
+    in_settings: bool,
+    in_result: bool,
+    in_file_content: bool,
+) {
+    // Cancel any pending deferred copy when the user clicks again.
+    app.copy_defer_ticks = 0;
+    app.pending_copy_source = None;
+
+    let clicks = update_click_tracking(app, col, row);
+
+    // Start a new selection if clicking inside a text area.
+    let started_selection = start_text_selection(app, col, row, clicks, in_task_input, in_result, in_file_content);
+
+    if !started_selection {
+        // Click outside any text area: clear selection.
+        app.selection = None;
+        app.copy_flash_ticks = 0;
+        app.click_count = 0;
+    }
+
+    // Existing click handlers (sidebar, file tree, settings, filter, task input cursor).
+    if in_sidebar {
+        let rect = app.sidebar_rect.unwrap();
+        let idx = (row as usize).saturating_sub(rect.y as usize);
+        let screens = Screen::all();
+        if idx < screens.len() {
+            app.screen = screens[idx];
+        }
+    } else if app.screen == Screen::Files && in_file_tree {
+        let rect = app.file_tree_rect.unwrap();
+        let idx = (row as usize).saturating_sub(rect.y as usize);
+        let paths: Vec<String> = app.orchestrator.file_contents.keys().cloned().collect();
+        let visible = build_visible_tree(&paths, &app.expanded_dirs, &app.file_filter);
+        if idx < visible.len() {
+            app.file_scroll = idx;
+            let entry = &visible[idx];
+            if entry.is_dir {
+                if entry.is_expanded {
+                    app.expanded_dirs.remove(&entry.path);
+                } else {
+                    app.expanded_dirs.insert(entry.path.clone());
+                }
+            } else {
+                app.selected_file = Some(entry.path.clone());
+            }
+        }
+    } else if app.screen == Screen::Settings && in_settings {
+        let rect = app.settings_rect.unwrap();
+        let idx = (row as usize).saturating_sub(rect.y as usize);
+        const SETTINGS_COUNT: usize = 5;
+        if idx < SETTINGS_COUNT {
+            app.settings_cursor = idx;
+            app.settings_hover = Some(idx);
+            match idx {
+                0 => app.toggle_animation_speed(),
+                1 => app.mouse_enabled = !app.mouse_enabled,
+                2 => app.toggle_log_filter(),
+                3 => app.toggle_theme(),
+                4 => app.toggle_copy_defer_duration(),
+                _ => {}
+            }
+        }
+    }
+}
+
+/// Start a text selection on mouse down. Returns true if a selection was started.
+fn start_text_selection(
+    app: &mut App,
+    col: u16,
+    row: u16,
+    clicks: u8,
+    in_task_input: bool,
+    in_result: bool,
+    in_file_content: bool,
+) -> bool {
+    if app.screen == Screen::Task && in_task_input {
+        let rect = app.task_input_rect.unwrap();
+        let idx = byte_index_at_click(&app.task_input, rect, app.task_scroll, col, row);
+        let (start, end) = select_range(&app.task_input, idx, rect.width, clicks);
+        app.selection = Some(TextSelection {
+            source: SelectionSource::TaskInput,
+            start,
+            end,
+        });
+        app.task_cursor = end;
+        app.task_input_focused = true;
+        app.copy_flash_ticks = 0;
+        return true;
+    }
+
+    if app.screen == Screen::Task && in_result && let Some(result) = &app.last_result {
+        let rect = app.result_rect.unwrap();
+        let idx = byte_index_at_click(result, rect, app.result_scroll, col, row);
+        let (start, end) = select_range(result, idx, rect.width, clicks);
+        app.selection = Some(TextSelection {
+            source: SelectionSource::Result,
+            start,
+            end,
+        });
+        app.copy_flash_ticks = 0;
+        return true;
+    }
+
+    if app.screen == Screen::Files && in_file_content && let Some(content) = app.selected_file.as_ref().and_then(|f| app.orchestrator.file_contents.get(f)) {
+        let rect = app.file_content_rect.unwrap();
+        let idx = byte_index_at_click(content, rect, app.file_content_scroll, col, row);
+        let (start, end) = select_range(content, idx, rect.width, clicks);
+        app.selection = Some(TextSelection {
+            source: SelectionSource::FileContent,
+            start,
+            end,
+        });
+        app.copy_flash_ticks = 0;
+        return true;
+    }
+
+    if app.screen == Screen::Files && app.file_filter_rect.is_some_and(|r| contains(r, col, row)) {
+        let rect = app.file_filter_rect.unwrap();
+        let click_col = col.saturating_sub(rect.x) as usize;
+        let idx = click_col.min(app.file_filter.len());
+        let (start, end) = if clicks == 3 {
+            (0, app.file_filter.len())
+        } else if clicks == 2 {
+            select_word(&app.file_filter, idx)
+        } else {
+            (idx, idx)
+        };
+        app.selection = Some(TextSelection {
+            source: SelectionSource::FileFilter,
+            start,
+            end,
+        });
+        app.file_filter_focused = true;
+        app.file_filter_cursor = end;
+        app.copy_flash_ticks = 0;
+        return true;
+    }
+
+    false
+}
+
+/// Select a range based on click count: triple = line, double = word, single = zero-width.
+fn select_range(text: &str, idx: usize, width: u16, clicks: u8) -> (usize, usize) {
+    if clicks == 3 {
+        select_wrapped_line(text, idx, width)
+    } else if clicks == 2 {
+        select_word(text, idx)
+    } else {
+        (idx, idx)
+    }
+}
+
+/// Handle mouse drag: extend the current text selection.
+fn handle_mouse_drag(app: &mut App, col: u16, row: u16) {
+    let Some(sel) = &mut app.selection else { return };
+    let idx = match sel.source {
+        SelectionSource::TaskInput => {
+            byte_index_at_click(&app.task_input, app.task_input_rect.unwrap(), app.task_scroll, col, row)
+        }
+        SelectionSource::Result => {
+            if let Some(result) = &app.last_result {
+                byte_index_at_click(result, app.result_rect.unwrap(), app.result_scroll, col, row)
+            } else {
+                return;
+            }
+        }
+        SelectionSource::FileContent => {
+            if let Some(content) = app.selected_file.as_ref().and_then(|f| app.orchestrator.file_contents.get(f)) {
+                byte_index_at_click(content, app.file_content_rect.unwrap(), app.file_content_scroll, col, row)
+            } else {
+                return;
+            }
+        }
+        SelectionSource::FileFilter => {
+            let rect = app.file_filter_rect.unwrap();
+            let click_col = col.saturating_sub(rect.x) as usize;
+            click_col.min(app.file_filter.len())
+        }
+    };
+    sel.end = idx;
+}
+
+/// Handle mouse button up: copy selection or defer copy for multi-click.
+fn handle_mouse_up(app: &mut App) {
+    if let Some(sel) = app.selection.as_ref() {
+        // Input boxes: keep selection for editing, do NOT copy.
+        if sel.source == SelectionSource::TaskInput || sel.source == SelectionSource::FileFilter {
+            return;
+        }
+        let (start, end) = (sel.start.min(sel.end), sel.start.max(sel.end));
+        if end > start && app.click_count > 1 {
+            // Defer copy for multi-click to avoid duplicate clipboard entries.
+            app.copy_defer_ticks = app.copy_defer_duration;
+            app.pending_copy_source = Some(sel.source);
+            return;
+        }
+    }
+    if let Some(sel) = app.selection.take() {
+        let (start, end) = (sel.start.min(sel.end), sel.start.max(sel.end));
+        if end > start {
+            let text = match sel.source {
+                SelectionSource::TaskInput => app.task_input[start..end].to_string(),
+                SelectionSource::Result => {
+                    app.last_result.as_ref().map(|r| r[start..end].to_string()).unwrap_or_default()
+                }
+                SelectionSource::FileContent => {
+                    app.selected_file.as_ref()
+                        .and_then(|f| app.orchestrator.file_contents.get(f))
+                        .map(|c| c[start..end].to_string())
+                        .unwrap_or_default()
+                }
+                SelectionSource::FileFilter => app.file_filter[start..end].to_string(),
+            };
+            copy_to_clipboard(&text);
+            app.set_status("Copied to clipboard!", crate::tui::app::StatusKind::Success);
+            // Keep selection visible for the flash duration.
+            app.selection = Some(TextSelection {
+                source: sel.source,
+                start,
+                end,
+            });
+            app.copy_flash_ticks = 5;
+        }
+    }
+}
+
+/// Handle mouse move: update hover states.
+fn handle_mouse_moved(app: &mut App, _col: u16, row: u16, in_sidebar: bool, in_file_tree: bool, in_settings: bool) {
+    // Clear all hover states first, then set whichever applies.
+    app.sidebar_hover = None;
+    app.file_hover = None;
+    app.settings_hover = None;
+
+    if in_sidebar {
+        let rect = app.sidebar_rect.unwrap();
+        let idx = (row as usize).saturating_sub(rect.y as usize);
+        let screens = Screen::all();
+        if idx < screens.len() {
+            app.sidebar_hover = Some(idx);
+        }
+    } else if app.screen == Screen::Files && in_file_tree {
+        let rect = app.file_tree_rect.unwrap();
+        let idx = (row as usize).saturating_sub(rect.y as usize);
+        let paths: Vec<String> = app.orchestrator.file_contents.keys().cloned().collect();
+        let visible = build_visible_tree(&paths, &app.expanded_dirs, &app.file_filter);
+        if idx < visible.len() {
+            app.file_hover = Some(idx);
+        }
+    } else if app.screen == Screen::Settings && in_settings {
+        let rect = app.settings_rect.unwrap();
+        let idx = (row as usize).saturating_sub(rect.y as usize);
+        const SETTINGS_COUNT: usize = 5;
+        if idx < SETTINGS_COUNT {
+            app.settings_hover = Some(idx);
+        }
+    }
+}
+
+/// Handle mouse scroll: direction -1 = up, 1 = down.
+fn handle_mouse_scroll(
+    app: &mut App,
+    in_file_tree: bool,
+    in_file_content: bool,
+    in_result: bool,
+    direction: i8,
+) {
+    let delta = 3usize;
+    if app.screen == Screen::Logs {
+        if direction < 0 {
+            app.log_scroll = app.log_scroll.saturating_sub(delta);
+        } else {
+            app.log_scroll = (app.log_scroll + delta).min(app.logs.len().saturating_sub(1));
+        }
+    } else if app.screen == Screen::Files && in_file_tree {
+        let paths: Vec<String> = app.orchestrator.file_contents.keys().cloned().collect();
+        let visible = build_visible_tree(&paths, &app.expanded_dirs, &app.file_filter);
+        if direction < 0 {
+            if !visible.is_empty() && app.file_scroll > 0 {
+                app.file_scroll -= 1;
+                if let Some(entry) = visible.get(app.file_scroll) && !entry.is_dir {
+                    app.selected_file = Some(entry.path.clone());
+                }
+            }
+        } else if app.file_scroll + 1 < visible.len() {
+            app.file_scroll += 1;
+            if let Some(entry) = visible.get(app.file_scroll) && !entry.is_dir {
+                app.selected_file = Some(entry.path.clone());
+            }
+        }
+    } else if app.screen == Screen::Files && in_file_content {
+        if let Some(content) = app.selected_file.as_ref().and_then(|f| app.orchestrator.file_contents.get(f)) {
+            let total = wrap_text(content, app.file_content_rect.map(|r| r.width).unwrap_or(40)).len();
+            if direction < 0 {
+                app.file_content_scroll = app.file_content_scroll.saturating_sub(delta);
+            } else {
+                app.file_content_scroll = (app.file_content_scroll + delta).min(total.saturating_sub(1));
+            }
+        }
+    } else if app.screen == Screen::Task && in_result && let Some(result) = &app.last_result {
+        let total = wrap_text(result, app.result_rect.map(|r| r.width).unwrap_or(40)).len();
+        if direction < 0 {
+            app.result_scroll = app.result_scroll.saturating_sub(delta);
+        } else {
+            app.result_scroll = (app.result_scroll + delta).min(total.saturating_sub(1));
+        }
+    }
+}
+
+// ── Unit tests ──
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // -------------------------------------------------------------------------
+    // select_word
+    // -------------------------------------------------------------------------
+
+    #[test]
+    fn select_word_basic() {
+        let text = "hello world foo";
+        assert_eq!(select_word(text, 2), (0, 5));   // inside "hello"
+        assert_eq!(select_word(text, 8), (6, 11));  // inside "world"
+        assert_eq!(select_word(text, 12), (12, 15)); // inside "foo"
+    }
+
+    #[test]
+    fn select_word_click_on_whitespace() {
+        let text = "hello world";
+        // Clicking on the space between words selects the preceding word
+        // because the backward expansion walks over "hello" before hitting the space.
+        assert_eq!(select_word(text, 5), (0, 5)); // byte 5 is the space
+    }
+
+    #[test]
+    fn select_word_empty() {
+        assert_eq!(select_word("", 0), (0, 0));
+    }
+
+    #[test]
+    fn select_word_non_word_chars() {
+        let text = "   ";
+        assert_eq!(select_word(text, 1), (1, 1)); // zero-width on space
+    }
+
+    #[test]
+    fn select_word_unicode() {
+        let text = "hello 世界 foo";
+        // "世界": '世' = bytes 6..9, '界' = bytes 9..12
+        assert_eq!(select_word(text, 8), (6, 12));
+        assert_eq!(select_word(text, 0), (0, 5)); // "hello"
+    }
+
+    #[test]
+    fn select_word_out_of_bounds() {
+        let text = "abc";
+        assert_eq!(select_word(text, 100), (0, 3));
+    }
+
+    // -------------------------------------------------------------------------
+    // select_wrapped_line
+    // -------------------------------------------------------------------------
+
+    #[test]
+    fn select_wrapped_line_basic() {
+        let text = "hello world foo bar";
+        // width 10: "hello worl" | "d foo bar"
+        assert_eq!(select_wrapped_line(text, 0, 10), (0, 10));
+        assert_eq!(select_wrapped_line(text, 5, 10), (0, 10));
+        assert_eq!(select_wrapped_line(text, 12, 10), (10, 19));
+    }
+
+    #[test]
+    fn select_wrapped_line_with_newlines() {
+        let text = "line1\nline2\nline3";
+        assert_eq!(select_wrapped_line(text, 3, 20), (0, 5));
+        assert_eq!(select_wrapped_line(text, 8, 20), (6, 11));
+    }
+
+    #[test]
+    fn select_wrapped_line_empty() {
+        assert_eq!(select_wrapped_line("", 0, 10), (0, 0));
+    }
+
+    #[test]
+    fn select_wrapped_line_out_of_bounds() {
+        let text = "abc";
+        assert_eq!(select_wrapped_line(text, 100, 10), (3, 3));
+    }
+
+    // -------------------------------------------------------------------------
+    // select_range
+    // -------------------------------------------------------------------------
+
+    #[test]
+    fn select_range_single_click() {
+        let text = "hello world";
+        assert_eq!(select_range(text, 3, 10, 1), (3, 3));
+    }
+
+    #[test]
+    fn select_range_double_click() {
+        let text = "hello world";
+        assert_eq!(select_range(text, 3, 10, 2), (0, 5));
+    }
+
+    #[test]
+    fn select_range_triple_click() {
+        let text = "hello world foo";
+        assert_eq!(select_range(text, 3, 10, 3), (0, 10));
+    }
+
+    // -------------------------------------------------------------------------
+    // update_click_tracking
+    // -------------------------------------------------------------------------
+
+    #[test]
+    fn click_tracking_first_click() {
+        let mut app = App::new();
+        let count = update_click_tracking(&mut app, 5, 5);
+        assert_eq!(count, 1);
+        assert_eq!(app.click_count, 1);
+        assert_eq!(app.last_click_pos, (5, 5));
+    }
+
+    #[test]
+    fn click_tracking_double_click() {
+        let mut app = App::new();
+        update_click_tracking(&mut app, 5, 5);
+        let count = update_click_tracking(&mut app, 5, 5);
+        assert_eq!(count, 2);
+        assert_eq!(app.click_count, 2);
+    }
+
+    #[test]
+    fn click_tracking_triple_click() {
+        let mut app = App::new();
+        update_click_tracking(&mut app, 5, 5);
+        update_click_tracking(&mut app, 5, 5);
+        let count = update_click_tracking(&mut app, 5, 5);
+        assert_eq!(count, 3);
+        assert_eq!(app.click_count, 3);
+    }
+
+    #[test]
+    fn click_tracking_caps_at_three() {
+        let mut app = App::new();
+        for _ in 0..10 {
+            update_click_tracking(&mut app, 5, 5);
+        }
+        assert_eq!(app.click_count, 3);
+    }
+
+    #[test]
+    fn click_tracking_resets_on_distance() {
+        let mut app = App::new();
+        update_click_tracking(&mut app, 5, 5);
+        // Move more than MULTI_CLICK_DIST (1 cell) away
+        let count = update_click_tracking(&mut app, 10, 10);
+        assert_eq!(count, 1);
+    }
+
+    #[test]
+    fn click_tracking_resets_on_time() {
+        let mut app = App::new();
+        update_click_tracking(&mut app, 5, 5);
+        // Manually set last_click_time to be long ago
+        app.last_click_time = Some(Instant::now() - Duration::from_secs(10));
+        let count = update_click_tracking(&mut app, 5, 5);
+        assert_eq!(count, 1);
+    }
+
+    // -------------------------------------------------------------------------
+    // tick_deferred_copy
+    // -------------------------------------------------------------------------
+
+    #[test]
+    fn deferred_copy_counts_down() {
+        let mut app = App::new();
+        app.copy_defer_ticks = 3;
+        app.pending_copy_source = Some(SelectionSource::Result);
+        app.last_result = Some("hello world".to_string());
+        app.selection = Some(TextSelection {
+            source: SelectionSource::Result,
+            start: 0,
+            end: 5,
+        });
+
+        tick_deferred_copy(&mut app);
+        assert_eq!(app.copy_defer_ticks, 2);
+        assert!(app.pending_copy_source.is_some());
+    }
+
+    #[test]
+    fn deferred_copy_fires_when_timer_reaches_zero() {
+        let mut app = App::new();
+        app.copy_defer_ticks = 1;
+        app.pending_copy_source = Some(SelectionSource::Result);
+        app.last_result = Some("hello world".to_string());
+        app.selection = Some(TextSelection {
+            source: SelectionSource::Result,
+            start: 0,
+            end: 5,
+        });
+
+        tick_deferred_copy(&mut app);
+        assert_eq!(app.copy_defer_ticks, 0);
+        assert!(app.pending_copy_source.is_none());
+        // Selection should be restored with flash
+        assert!(app.selection.is_some());
+        assert_eq!(app.copy_flash_ticks, 5);
+        let sel = app.selection.unwrap();
+        assert_eq!(sel.source, SelectionSource::Result);
+        assert_eq!(sel.start, 0);
+        assert_eq!(sel.end, 5);
+    }
+
+    #[test]
+    fn deferred_copy_noop_when_timer_zero() {
+        let mut app = App::new();
+        app.copy_defer_ticks = 0;
+        app.pending_copy_source = Some(SelectionSource::Result);
+
+        tick_deferred_copy(&mut app);
+        assert!(app.pending_copy_source.is_some()); // not consumed
+    }
+
+    #[test]
+    fn deferred_copy_canceled_when_selection_cleared() {
+        let mut app = App::new();
+        app.copy_defer_ticks = 1;
+        app.pending_copy_source = Some(SelectionSource::Result);
+        app.last_result = Some("hello world".to_string());
+        // No selection
+        app.selection = None;
+
+        tick_deferred_copy(&mut app);
+        assert_eq!(app.copy_defer_ticks, 0);
+        assert!(app.pending_copy_source.is_none());
+        assert!(app.selection.is_none());
+        assert_eq!(app.copy_flash_ticks, 0);
+    }
+
+    #[test]
+    fn deferred_copy_canceled_when_selection_source_mismatches() {
+        let mut app = App::new();
+        app.copy_defer_ticks = 1;
+        app.pending_copy_source = Some(SelectionSource::Result);
+        app.last_result = Some("hello world".to_string());
+        // Selection is for a different source
+        app.selection = Some(TextSelection {
+            source: SelectionSource::FileContent,
+            start: 0,
+            end: 5,
+        });
+
+        tick_deferred_copy(&mut app);
+        assert_eq!(app.copy_defer_ticks, 0);
+        assert!(app.pending_copy_source.is_none());
+        // Selection should NOT be consumed
+        assert!(app.selection.is_some());
+        assert_eq!(app.copy_flash_ticks, 0);
+    }
+
+    #[test]
+    fn deferred_copy_zero_width_selection_noop() {
+        let mut app = App::new();
+        app.copy_defer_ticks = 1;
+        app.pending_copy_source = Some(SelectionSource::Result);
+        app.last_result = Some("hello world".to_string());
+        app.selection = Some(TextSelection {
+            source: SelectionSource::Result,
+            start: 5,
+            end: 5, // zero-width
+        });
+
+        tick_deferred_copy(&mut app);
+        assert_eq!(app.copy_defer_ticks, 0);
+        assert!(app.pending_copy_source.is_none());
+        // Selection preserved but not copied
+        assert!(app.selection.is_some());
+        assert_eq!(app.copy_flash_ticks, 0);
+    }
+
+    // -------------------------------------------------------------------------
+    // handle_mouse_down (deferred-copy cancellation)
+    // -------------------------------------------------------------------------
+
+    #[test]
+    fn mouse_down_cancels_deferred_copy() {
+        let mut app = App::new();
+        app.copy_defer_ticks = 2;
+        app.pending_copy_source = Some(SelectionSource::Result);
+
+        // Simulate a click outside all text areas (no rects set)
+        handle_mouse_down(&mut app, 0, 0, false, false, false, false, false, false);
+
+        assert_eq!(app.copy_defer_ticks, 0);
+        assert!(app.pending_copy_source.is_none());
+    }
+
+    // -------------------------------------------------------------------------
+    // copy_defer_duration configurable
+    // -------------------------------------------------------------------------
+
+    #[test]
+    fn copy_defer_duration_defaults_to_three() {
+        let app = App::new();
+        assert_eq!(app.copy_defer_duration, 3);
+    }
+
+    #[test]
+    fn copy_defer_duration_cycles() {
+        let mut app = App::new();
+        assert_eq!(app.copy_defer_duration, 3);
+        app.toggle_copy_defer_duration();
+        assert_eq!(app.copy_defer_duration, 5);
+        app.toggle_copy_defer_duration();
+        assert_eq!(app.copy_defer_duration, 10);
+        app.toggle_copy_defer_duration();
+        assert_eq!(app.copy_defer_duration, 1);
+        app.toggle_copy_defer_duration();
+        assert_eq!(app.copy_defer_duration, 2);
+        app.toggle_copy_defer_duration();
+        assert_eq!(app.copy_defer_duration, 3);
+    }
+}
 

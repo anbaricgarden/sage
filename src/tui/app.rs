@@ -146,6 +146,8 @@ pub struct App {
     // ── Deferred copy for multi-click debounce ──
     pub copy_defer_ticks: u8,
     pub pending_copy_source: Option<SelectionSource>,
+    /// Copy defer duration in ticks (100ms each). Default 3 = ~300ms.
+    pub copy_defer_duration: u8,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -232,6 +234,7 @@ impl App {
             click_count: 0,
             copy_defer_ticks: 0,
             pending_copy_source: None,
+            copy_defer_duration: 3,
         }
     }
 
@@ -307,6 +310,17 @@ impl App {
         self.theme = match self.theme {
             Theme::Sage => Theme::Dark,
             Theme::Dark => Theme::Sage,
+        };
+    }
+
+    /// Cycle copy defer duration through preset values (1,2,3,5,10 ticks).
+    pub fn toggle_copy_defer_duration(&mut self) {
+        self.copy_defer_duration = match self.copy_defer_duration {
+            1 => 2,
+            2 => 3,
+            3 => 5,
+            5 => 10,
+            _ => 1,
         };
     }
 
