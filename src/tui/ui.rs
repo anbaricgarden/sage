@@ -377,7 +377,7 @@ fn render_task(frame: &mut Frame, app: &mut App, area: Rect) {
             Span::styled("Enter ", Style::default().fg(TEXT_SECONDARY)),
             Span::styled("Submit", Style::default().fg(ACCENT).add_modifier(Modifier::BOLD)),
             Span::styled("  |  ", Style::default().fg(TEXT_MUTED)),
-            Span::styled("Ctrl+Enter", Style::default().fg(ACCENT)),
+            Span::styled("Alt+Enter", Style::default().fg(ACCENT)),
             Span::styled(" Newline", Style::default().fg(TEXT_SECONDARY)),
             Span::styled("  |  ", Style::default().fg(TEXT_MUTED)),
             Span::styled("Ctrl+C", Style::default().fg(ACCENT)),
@@ -768,7 +768,7 @@ fn render_status_bar(frame: &mut Frame, app: &App, area: Rect) {
             (text.as_str(), c)
         }
         None => {
-            let hint = "Tab/1-6 Navigate  |  Enter Submit  |  Ctrl+Enter Newline  |  ↑↓ Scroll  |  Ctrl+C Quit";
+            let hint = "Tab/1-6 Navigate  |  Enter Submit  |  Alt+Enter Newline  |  ↑↓ Scroll  |  Ctrl+C Quit";
             (hint, TEXT_MUTED)
         }
     };
