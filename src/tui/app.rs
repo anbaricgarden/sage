@@ -1,4 +1,5 @@
 use std::collections::{HashSet, VecDeque};
+use std::time::Instant;
 
 use ratatui::layout::Rect;
 
@@ -138,6 +139,10 @@ pub struct App {
     pub mouse_enabled: bool,
     pub log_filter: LogFilter,
     pub theme: Theme,
+    // ── Click tracking for double-/triple-click ──
+    pub last_click_time: Option<Instant>,
+    pub last_click_pos: (u16, u16),
+    pub click_count: u8,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -219,6 +224,9 @@ impl App {
             mouse_enabled: true,
             log_filter: LogFilter::All,
             theme: Theme::Sage,
+            last_click_time: None,
+            last_click_pos: (0, 0),
+            click_count: 0,
         }
     }
 

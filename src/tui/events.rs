@@ -1,4 +1,5 @@
 use std::io::{self, Write};
+use std::time::{Duration, Instant};
 
 use crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers, MouseEventKind};
 
@@ -132,6 +133,88 @@ fn byte_index_at_click(text: &str, rect: ratatui::layout::Rect, scroll: usize, c
     let click_row = (row as usize).saturating_sub(rect.y as usize) + scroll;
     let click_col = col.saturating_sub(rect.x) as usize;
     visual_pos_to_byte_index(text, click_row, click_col, rect.width)
+}
+
+/// Threshold for multi-click detection.
+const MULTI_CLICK_MS: u64 = 400;
+const MULTI_CLICK_DIST: u16 = 1;
+
+/// Detect whether this click is part of a double- or triple-click sequence.
+fn update_click_tracking(app: &mut App, col: u16, row: u16) -> u8 {
+    let now = Instant::now();
+    let (last_col, last_row) = app.last_click_pos;
+    let dx = col.abs_diff(last_col);
+    let dy = row.abs_diff(last_row);
+    let within_time = app.last_click_time.map(|t| now.duration_since(t) < Duration::from_millis(MULTI_CLICK_MS)).unwrap_or(false);
+    let within_dist = dx <= MULTI_CLICK_DIST && dy <= MULTI_CLICK_DIST;
+
+    if within_time && within_dist {
+        app.click_count = (app.click_count + 1).min(3);
+    } else {
+        app.click_count = 1;
+    }
+    app.last_click_time = Some(now);
+    app.last_click_pos = (col, row);
+    app.click_count
+}
+
+/// Select the word surrounding `byte_idx` in `text`.
+/// Returns `(start, end)` byte indices.
+fn select_word(text: &str, byte_idx: usize) -> (usize, usize) {
+    let len = text.len();
+    let idx = byte_idx.min(len);
+    // Ensure we start at a char boundary.
+    let mut start = idx;
+    while start > 0 && !text.is_char_boundary(start) {
+        start -= 1;
+    }
+    let mut end = idx;
+    while end < len && !text.is_char_boundary(end) {
+        end += 1;
+    }
+
+    // Expand start backward over word chars.
+    let mut chars = text[..start].char_indices().rev().peekable();
+    while let Some((i, c)) = chars.peek() {
+        if c.is_alphanumeric() || *c == '_' {
+            start = *i;
+            chars.next();
+        } else {
+            break;
+        }
+    }
+    // If the character at `start` is a word char, include it.
+    if text[start..].chars().next().is_some_and(|c| !c.is_alphanumeric() && c != '_') {
+        // The character at start is not a word char, move forward to the first word char.
+        for (i, c) in text[start..].char_indices() {
+            if c.is_alphanumeric() || c == '_' {
+                start += i;
+                break;
+            }
+        }
+    }
+
+    // Expand end forward over word chars.
+    let mut new_end = end;
+    for (i, c) in text[end..].char_indices() {
+        if c.is_alphanumeric() || c == '_' {
+            new_end = end + i + c.len_utf8();
+        } else {
+            break;
+        }
+    }
+    (start.min(len), new_end.min(len))
+}
+
+/// Select the wrapped line containing `byte_idx`.
+fn select_wrapped_line(text: &str, byte_idx: usize, width: u16) -> (usize, usize) {
+    let lines = wrap_text(text, width);
+    for (s, e) in lines {
+        if byte_idx >= s && byte_idx <= e {
+            return (s, e);
+        }
+    }
+    (text.len(), text.len())
 }
 
 /// Poll for an event and update the app state.
@@ -860,26 +943,42 @@ fn handle_mouse(app: &mut App, kind: MouseEventKind, col: u16, row: u16) {
 
     match kind {
         MouseEventKind::Down(_) => {
+            let clicks = update_click_tracking(app, col, row);
+
             // Start a new selection if clicking inside a text area.
             if app.screen == Screen::Task && in_task_input {
                 let rect = app.task_input_rect.unwrap();
                 let idx = byte_index_at_click(&app.task_input, rect, app.task_scroll, col, row);
+                let (start, end) = if clicks == 3 {
+                    select_wrapped_line(&app.task_input, idx, rect.width)
+                } else if clicks == 2 {
+                    select_word(&app.task_input, idx)
+                } else {
+                    (idx, idx)
+                };
                 app.selection = Some(TextSelection {
                     source: SelectionSource::TaskInput,
-                    start: idx,
-                    end: idx,
+                    start,
+                    end,
                 });
-                app.task_cursor = idx;
+                app.task_cursor = end;
                 app.task_input_focused = true;
                 app.copy_flash_ticks = 0;
             } else if app.screen == Screen::Task && in_result {
                 if let Some(result) = &app.last_result {
                     let rect = app.result_rect.unwrap();
                     let idx = byte_index_at_click(result, rect, app.result_scroll, col, row);
+                    let (start, end) = if clicks == 3 {
+                        select_wrapped_line(result, idx, rect.width)
+                    } else if clicks == 2 {
+                        select_word(result, idx)
+                    } else {
+                        (idx, idx)
+                    };
                     app.selection = Some(TextSelection {
                         source: SelectionSource::Result,
-                        start: idx,
-                        end: idx,
+                        start,
+                        end,
                     });
                     app.copy_flash_ticks = 0;
                 }
@@ -887,10 +986,17 @@ fn handle_mouse(app: &mut App, kind: MouseEventKind, col: u16, row: u16) {
                 if let Some(content) = app.selected_file.as_ref().and_then(|f| app.orchestrator.file_contents.get(f)) {
                     let rect = app.file_content_rect.unwrap();
                     let idx = byte_index_at_click(content, rect, app.file_content_scroll, col, row);
+                    let (start, end) = if clicks == 3 {
+                        select_wrapped_line(content, idx, rect.width)
+                    } else if clicks == 2 {
+                        select_word(content, idx)
+                    } else {
+                        (idx, idx)
+                    };
                     app.selection = Some(TextSelection {
                         source: SelectionSource::FileContent,
-                        start: idx,
-                        end: idx,
+                        start,
+                        end,
                     });
                     app.copy_flash_ticks = 0;
                 }
@@ -898,18 +1004,26 @@ fn handle_mouse(app: &mut App, kind: MouseEventKind, col: u16, row: u16) {
                 let rect = app.file_filter_rect.unwrap();
                 let click_col = col.saturating_sub(rect.x) as usize;
                 let idx = click_col.min(app.file_filter.len());
+                let (start, end) = if clicks == 3 {
+                    (0, app.file_filter.len())
+                } else if clicks == 2 {
+                    select_word(&app.file_filter, idx)
+                } else {
+                    (idx, idx)
+                };
                 app.selection = Some(TextSelection {
                     source: SelectionSource::FileFilter,
-                    start: idx,
-                    end: idx,
+                    start,
+                    end,
                 });
                 app.file_filter_focused = true;
-                app.file_filter_cursor = idx;
+                app.file_filter_cursor = end;
                 app.copy_flash_ticks = 0;
             } else {
                 // Click outside any text area: clear selection.
                 app.selection = None;
                 app.copy_flash_ticks = 0;
+                app.click_count = 0;
             }
 
             // Existing click handlers (sidebar, file tree, settings, filter, task input cursor).
