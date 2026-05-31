@@ -176,6 +176,15 @@ fn handle_task_keys(app: &mut App, code: KeyCode, modifiers: KeyModifiers) {
             app.task_input_focused = true;
             auto_scroll(app, width);
         }
+        KeyCode::Char('w') if ctrl => {
+            // Fallback for terminals that intercept Ctrl+Backspace.
+            let pos = app.task_cursor;
+            let prev = prev_word_boundary(&app.task_input, pos);
+            app.task_input.replace_range(prev..pos, "");
+            app.task_cursor = prev;
+            app.task_input_focused = true;
+            auto_scroll(app, width);
+        }
         KeyCode::Backspace => {
             if app.task_cursor > 0 {
                 let prev = prev_char_boundary(&app.task_input, app.task_cursor);
@@ -258,17 +267,17 @@ fn handle_task_keys(app: &mut App, code: KeyCode, modifiers: KeyModifiers) {
             auto_scroll(app, width);
         }
         KeyCode::Enter if ctrl => {
-            app.execute_task();
-            app.task_input.clear();
-            app.task_cursor = 0;
-            app.task_scroll = 0;
-        }
-        KeyCode::Enter => {
             let pos = app.task_cursor.min(app.task_input.len());
             app.task_input.insert(pos, '\n');
             app.task_cursor = pos + 1;
             app.task_input_focused = true;
             auto_scroll(app, width);
+        }
+        KeyCode::Enter => {
+            app.execute_task();
+            app.task_input.clear();
+            app.task_cursor = 0;
+            app.task_scroll = 0;
         }
         KeyCode::Esc => {
             app.task_input_focused = false;

@@ -335,7 +335,7 @@ fn render_task(frame: &mut Frame, app: &mut App, area: Rect) {
     // Placeholder when empty and not focused.
     if app.task_input.is_empty() && !app.task_input_focused && app.task_scroll == 0 {
         visible_lines = vec![Line::from(Span::styled(
-            "Type a task and press Ctrl+Enter...",
+            "Type a task and press Enter...",
             Style::default().fg(TEXT_MUTED),
         ))];
     }
@@ -369,8 +369,11 @@ fn render_task(frame: &mut Frame, app: &mut App, area: Rect) {
         ])
     } else {
         Line::from(vec![
-            Span::styled("Ctrl+Enter ", Style::default().fg(TEXT_SECONDARY)),
+            Span::styled("Enter ", Style::default().fg(TEXT_SECONDARY)),
             Span::styled("Submit", Style::default().fg(ACCENT).add_modifier(Modifier::BOLD)),
+            Span::styled("  |  ", Style::default().fg(TEXT_MUTED)),
+            Span::styled("Ctrl+Enter", Style::default().fg(ACCENT)),
+            Span::styled(" Newline", Style::default().fg(TEXT_SECONDARY)),
             Span::styled("  |  ", Style::default().fg(TEXT_MUTED)),
             Span::styled("Ctrl+C", Style::default().fg(ACCENT)),
             Span::styled(" Quit", Style::default().fg(TEXT_SECONDARY)),
@@ -632,7 +635,7 @@ fn render_status_bar(frame: &mut Frame, app: &App, area: Rect) {
             (text.as_str(), c)
         }
         None => {
-            let hint = "Tab/1-5 Navigate  |  Ctrl+Enter Submit  |  ↑↓ Scroll  |  Ctrl+C Quit";
+            let hint = "Tab/1-5 Navigate  |  Enter Submit  |  Ctrl+Enter Newline  |  ↑↓ Scroll  |  Ctrl+C Quit";
             (hint, TEXT_MUTED)
         }
     };
