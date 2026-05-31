@@ -1,8 +1,17 @@
 # sage — Token-Efficient Coding Agent
 
-A multi-agent coding system designed from first principles to minimize both input context tokens and output generation tokens at every architectural layer.
+A multi-agent coding system that calls API-based LLMs (Claude, GPT-4o, etc.) to minimize both input context tokens and output generation tokens at every architectural layer.
 
 ## Architecture
+
+sage uses **four specialized sub-agents**, each calling an API-based LLM chosen for its task:
+
+| Agent | API Model | Role |
+|---|---|---|
+| **Planner** | GPT-4o-mini or Claude 3.5 Haiku | Task decomposition, action graph generation |
+| **Editor** | GPT-4o or Claude 3.5 Sonnet | Hash-anchored diff generation |
+| **Executor** | GPT-4o-mini or Claude 3.5 Haiku | Parallel tool execution, result summarization |
+| **Reviewer** | GPT-4o-mini or Claude 3.5 Haiku | Semantic validation, rollback decisions |
 
 ```
 sage/
@@ -57,11 +66,12 @@ sage/
 - Extracts: functions, classes, methods, structs, interfaces, types, constants
 - Returns `Symbol` structs with name, kind, line range, signature, docstring
 
-### `agent/editor` — Basic Rule-Based Editor
+### `agent/editor` — Basic Rule-Based Editor (Phase 1)
 
 - Parses natural-language tasks (e.g. "Change 'X' to 'Y'")
 - Generates `EditBlock`s with proper anchor hashes
 - Heuristic fallback for quoted-string replacement when literal match fails
+- Part of the multi-agent pipeline; will be augmented by Planner / Executor / Reviewer in Phase 3
 
 ## Build & Run
 
