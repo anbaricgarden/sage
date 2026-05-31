@@ -652,17 +652,25 @@ fn render_settings(frame: &mut Frame, app: &mut App, area: Rect) {
         ),
     ];
 
+    // Reserve space for the hint at the bottom.
+    let hint_height = 1;
+    let list_area = Rect::new(inner.x, inner.y, inner.width, inner.height.saturating_sub(hint_height + 1));
+    app.settings_rect = Some(list_area);
+
     let items: Vec<ListItem> = settings
         .iter()
         .enumerate()
         .map(|(i, (label, value))| {
             let is_selected = i == app.settings_cursor;
+            let is_hovered = app.settings_hover == Some(i);
             let marker = if is_selected { "▸ " } else { "  " };
             let style = if is_selected {
                 Style::default()
                     .fg(ACCENT_BRIGHT)
                     .bg(SURFACE)
                     .add_modifier(Modifier::BOLD)
+            } else if is_hovered {
+                Style::default().fg(TEXT).bg(SURFACE_HOVER)
             } else {
                 Style::default().fg(TEXT)
             };
@@ -676,17 +684,16 @@ fn render_settings(frame: &mut Frame, app: &mut App, area: Rect) {
         .collect();
 
     let list = List::new(items).block(Block::default());
-    frame.render_widget(list, inner);
+    frame.render_widget(list, list_area);
 
     // Hint at the bottom.
     let hint = Paragraph::new(Line::from(vec![
         Span::styled("↑↓/j/k ", Style::default().fg(TEXT_MUTED)),
         Span::styled("Navigate  ", Style::default().fg(TEXT_SECONDARY)),
-        Span::styled("Enter/Space ", Style::default().fg(TEXT_MUTED)),
+        Span::styled("Enter/Space/Click ", Style::default().fg(TEXT_MUTED)),
         Span::styled("Toggle", Style::default().fg(TEXT_SECONDARY)),
     ]))
     .alignment(Alignment::Center);
-    let hint_height = 1;
     let hint_area = Rect::new(inner.x, inner.y + inner.height - hint_height, inner.width, hint_height);
     frame.render_widget(hint, hint_area);
 }

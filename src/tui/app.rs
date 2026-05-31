@@ -100,6 +100,8 @@ pub struct App {
     pub log_area_rect: Option<Rect>,
     // ── Settings ──
     pub settings_cursor: usize,
+    pub settings_hover: Option<usize>,
+    pub settings_rect: Option<Rect>,
     pub animation_speed: AnimationSpeed,
     pub mouse_enabled: bool,
     pub log_filter: LogFilter,
@@ -166,6 +168,8 @@ impl App {
             task_input_rect: None,
             log_area_rect: None,
             settings_cursor: 0,
+            settings_hover: None,
+            settings_rect: None,
             animation_speed: AnimationSpeed::Normal,
             mouse_enabled: true,
             log_filter: LogFilter::All,

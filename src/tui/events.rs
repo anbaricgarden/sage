@@ -441,11 +441,11 @@ fn handle_mouse(app: &mut App, kind: MouseEventKind, col: u16, row: u16) {
             let in_sidebar = app.sidebar_rect.is_some_and(|r| contains(r, col, row));
             let in_file_tree = app.file_tree_rect.is_some_and(|r| contains(r, col, row));
             let in_task_input = app.task_input_rect.is_some_and(|r| contains(r, col, row));
+            let in_settings = app.settings_rect.is_some_and(|r| contains(r, col, row));
 
             if in_sidebar {
                 let rect = app.sidebar_rect.unwrap();
-                let list_y_start = rect.y + 4; // title (3) + gap (1)
-                let idx = (row as usize).saturating_sub(list_y_start as usize);
+                let idx = (row as usize).saturating_sub(rect.y as usize);
                 let screens = Screen::all();
                 if idx < screens.len() {
                     app.screen = screens[idx];
@@ -468,6 +468,38 @@ fn handle_mouse(app: &mut App, kind: MouseEventKind, col: u16, row: u16) {
                 let click_col = col.saturating_sub(rect.x) as usize;
                 app.task_cursor =
                     visual_pos_to_byte_index(&app.task_input, click_row, click_col, rect.width);
+            } else if app.screen == Screen::Settings && in_settings {
+                let rect = app.settings_rect.unwrap();
+                let idx = (row as usize).saturating_sub(rect.y as usize);
+                const SETTINGS_COUNT: usize = 4;
+                if idx < SETTINGS_COUNT {
+                    app.settings_cursor = idx;
+                    app.settings_hover = Some(idx);
+                    match idx {
+                        0 => app.toggle_animation_speed(),
+                        1 => app.mouse_enabled = !app.mouse_enabled,
+                        2 => app.toggle_log_filter(),
+                        3 => app.toggle_theme(),
+                        _ => {}
+                    }
+                }
+            }
+        }
+        MouseEventKind::Moved => {
+            if app.screen == Screen::Settings {
+                let in_settings = app.settings_rect.is_some_and(|r| contains(r, col, row));
+                if in_settings {
+                    let rect = app.settings_rect.unwrap();
+                    let idx = (row as usize).saturating_sub(rect.y as usize);
+                    const SETTINGS_COUNT: usize = 4;
+                    if idx < SETTINGS_COUNT {
+                        app.settings_hover = Some(idx);
+                    } else {
+                        app.settings_hover = None;
+                    }
+                } else {
+                    app.settings_hover = None;
+                }
             }
         }
         MouseEventKind::ScrollUp => {
