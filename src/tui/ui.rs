@@ -66,6 +66,7 @@ pub fn render(frame: &mut Frame, app: &mut App) {
         Screen::Files => render_files(frame, app, inner),
         Screen::Logs => render_logs(frame, app, inner),
         Screen::Graph => render_graph(frame, app, inner),
+        Screen::Settings => render_settings(frame, app, inner),
     }
 
     render_status_bar(frame, app, status_area);
@@ -621,6 +622,75 @@ fn render_graph(frame: &mut Frame, app: &App, area: Rect) {
     frame.render_widget(list, list_inner);
 }
 
+// ── Settings Screen ──
+
+fn render_settings(frame: &mut Frame, app: &mut App, area: Rect) {
+    let block = Block::default()
+        .title(" Settings ")
+        .title_style(Style::default().fg(ACCENT).add_modifier(Modifier::BOLD))
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(BORDER));
+    let inner = area.inner(Margin::new(1, 1));
+    frame.render_widget(block, area);
+
+    let settings: Vec<(&str, String)> = vec![
+        (
+            "Animation Speed",
+            format!("{:?}", app.animation_speed),
+        ),
+        (
+            "Mouse Support",
+            if app.mouse_enabled { "On".to_string() } else { "Off".to_string() },
+        ),
+        (
+            "Log Filter",
+            format!("{:?}", app.log_filter),
+        ),
+        (
+            "Theme",
+            format!("{:?}", app.theme),
+        ),
+    ];
+
+    let items: Vec<ListItem> = settings
+        .iter()
+        .enumerate()
+        .map(|(i, (label, value))| {
+            let is_selected = i == app.settings_cursor;
+            let marker = if is_selected { "▸ " } else { "  " };
+            let style = if is_selected {
+                Style::default()
+                    .fg(ACCENT_BRIGHT)
+                    .bg(SURFACE)
+                    .add_modifier(Modifier::BOLD)
+            } else {
+                Style::default().fg(TEXT)
+            };
+            let content = Line::from(vec![
+                Span::styled(marker, Style::default().fg(ACCENT)),
+                Span::styled(format!("{:20}", label), style),
+                Span::styled(value.clone(), Style::default().fg(ACCENT)),
+            ]);
+            ListItem::new(content)
+        })
+        .collect();
+
+    let list = List::new(items).block(Block::default());
+    frame.render_widget(list, inner);
+
+    // Hint at the bottom.
+    let hint = Paragraph::new(Line::from(vec![
+        Span::styled("↑↓/j/k ", Style::default().fg(TEXT_MUTED)),
+        Span::styled("Navigate  ", Style::default().fg(TEXT_SECONDARY)),
+        Span::styled("Enter/Space ", Style::default().fg(TEXT_MUTED)),
+        Span::styled("Toggle", Style::default().fg(TEXT_SECONDARY)),
+    ]))
+    .alignment(Alignment::Center);
+    let hint_height = 1;
+    let hint_area = Rect::new(inner.x, inner.y + inner.height - hint_height, inner.width, hint_height);
+    frame.render_widget(hint, hint_area);
+}
+
 // ── Status Bar ──
 
 fn render_status_bar(frame: &mut Frame, app: &App, area: Rect) {
@@ -635,7 +705,7 @@ fn render_status_bar(frame: &mut Frame, app: &App, area: Rect) {
             (text.as_str(), c)
         }
         None => {
-            let hint = "Tab/1-5 Navigate  |  Enter Submit  |  Ctrl+Enter Newline  |  ↑↓ Scroll  |  Ctrl+C Quit";
+            let hint = "Tab/1-6 Navigate  |  Enter Submit  |  Ctrl+Enter Newline  |  ↑↓ Scroll  |  Ctrl+C Quit";
             (hint, TEXT_MUTED)
         }
     };

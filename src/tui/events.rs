@@ -134,6 +134,7 @@ fn handle_key(app: &mut App, code: KeyCode, modifiers: KeyModifiers) -> bool {
             KeyCode::Char('3') => { app.screen = Screen::Files; true }
             KeyCode::Char('4') => { app.screen = Screen::Logs; true }
             KeyCode::Char('5') => { app.screen = Screen::Graph; true }
+            KeyCode::Char('6') => { app.screen = Screen::Settings; true }
             _ => false,
         }
     };
@@ -146,6 +147,7 @@ fn handle_key(app: &mut App, code: KeyCode, modifiers: KeyModifiers) -> bool {
         Screen::Task => handle_task_keys(app, code, modifiers),
         Screen::Logs => handle_log_keys(app, code),
         Screen::Files => handle_file_keys(app, code),
+        Screen::Settings => handle_settings_keys(app, code),
         _ => {}
     }
 
@@ -378,6 +380,28 @@ fn handle_log_keys(app: &mut App, code: KeyCode) {
         }
         KeyCode::Home => app.log_scroll = 0,
         KeyCode::End => app.log_scroll = app.logs.len().saturating_sub(1),
+        _ => {}
+    }
+}
+
+fn handle_settings_keys(app: &mut App, code: KeyCode) {
+    const SETTINGS_COUNT: usize = 4;
+    match code {
+        KeyCode::Up | KeyCode::Char('k') => {
+            app.settings_cursor = app.settings_cursor.saturating_sub(1);
+        }
+        KeyCode::Down | KeyCode::Char('j') => {
+            app.settings_cursor = (app.settings_cursor + 1).min(SETTINGS_COUNT - 1);
+        }
+        KeyCode::Enter | KeyCode::Char(' ') => {
+            match app.settings_cursor {
+                0 => app.toggle_animation_speed(),
+                1 => app.mouse_enabled = !app.mouse_enabled,
+                2 => app.toggle_log_filter(),
+                3 => app.toggle_theme(),
+                _ => {}
+            }
+        }
         _ => {}
     }
 }

@@ -103,8 +103,9 @@ cargo clippy -- -D warnings
 | **Files (3)** | File tree with syntax-highlighted content viewer |
 | **Logs (4)** | Scrollable agent/system log history |
 | **Graph (5)** | CodeGraph stats + symbol list ranked by pageRank |
+| **Settings (6)** | TUI preferences: animation speed, mouse, log filter, theme |
 
-Keyboard shortcuts: `1-5` navigate screens, `Tab`/`BackTab` cycle, `Ctrl+C` quit, `↑↓`/`j`/`k` scroll, `Enter` submit tasks.
+Keyboard shortcuts: `1-6` navigate screens, `Tab`/`BackTab` cycle, `Ctrl+C` quit, `↑↓`/`j`/`k` scroll, `Enter` submit tasks.
 
 ## Test Coverage
 

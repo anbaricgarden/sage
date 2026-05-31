@@ -13,6 +13,7 @@ pub enum Screen {
     Files,
     Logs,
     Graph,
+    Settings,
 }
 
 impl Screen {
@@ -23,6 +24,7 @@ impl Screen {
             Screen::Files => "Files",
             Screen::Logs => "Logs",
             Screen::Graph => "Graph",
+            Screen::Settings => "Settings",
         }
     }
 
@@ -33,6 +35,7 @@ impl Screen {
             Screen::Files,
             Screen::Logs,
             Screen::Graph,
+            Screen::Settings,
         ]
     }
 }
@@ -95,6 +98,33 @@ pub struct App {
     pub file_tree_rect: Option<Rect>,
     pub task_input_rect: Option<Rect>,
     pub log_area_rect: Option<Rect>,
+    // ── Settings ──
+    pub settings_cursor: usize,
+    pub animation_speed: AnimationSpeed,
+    pub mouse_enabled: bool,
+    pub log_filter: LogFilter,
+    pub theme: Theme,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AnimationSpeed {
+    Slow,
+    Normal,
+    Fast,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LogFilter {
+    All,
+    Info,
+    Warning,
+    Error,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Theme {
+    Sage,
+    Dark,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -135,6 +165,11 @@ impl App {
             file_tree_rect: None,
             task_input_rect: None,
             log_area_rect: None,
+            settings_cursor: 0,
+            animation_speed: AnimationSpeed::Normal,
+            mouse_enabled: true,
+            log_filter: LogFilter::All,
+            theme: Theme::Sage,
         }
     }
 
@@ -178,7 +213,39 @@ impl App {
 
     /// Advance the spinner animation frame.
     pub fn tick_spinner(&mut self) {
-        self.spinner_frame = (self.spinner_frame + 1) % 8;
+        let step = match self.animation_speed {
+            AnimationSpeed::Slow => 1,
+            AnimationSpeed::Normal => 2,
+            AnimationSpeed::Fast => 4,
+        };
+        self.spinner_frame = (self.spinner_frame + step) % 8;
+    }
+
+    /// Cycle animation speed.
+    pub fn toggle_animation_speed(&mut self) {
+        self.animation_speed = match self.animation_speed {
+            AnimationSpeed::Slow => AnimationSpeed::Normal,
+            AnimationSpeed::Normal => AnimationSpeed::Fast,
+            AnimationSpeed::Fast => AnimationSpeed::Slow,
+        };
+    }
+
+    /// Cycle log filter.
+    pub fn toggle_log_filter(&mut self) {
+        self.log_filter = match self.log_filter {
+            LogFilter::All => LogFilter::Info,
+            LogFilter::Info => LogFilter::Warning,
+            LogFilter::Warning => LogFilter::Error,
+            LogFilter::Error => LogFilter::All,
+        };
+    }
+
+    /// Cycle theme.
+    pub fn toggle_theme(&mut self) {
+        self.theme = match self.theme {
+            Theme::Sage => Theme::Dark,
+            Theme::Dark => Theme::Sage,
+        };
     }
 
     /// Get the current spinner character.

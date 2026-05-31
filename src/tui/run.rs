@@ -21,25 +21,29 @@ pub fn run_tui() -> io::Result<()> {
     enable_raw_mode()?;
     let mut stdout = io::stdout();
     stdout.execute(EnterAlternateScreen)?;
-    stdout.execute(EnableMouseCapture)?;
     stdout.execute(Show)?;
 
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
 
     let mut app = App::new();
+    if app.mouse_enabled {
+        terminal.backend_mut().execute(EnableMouseCapture)?;
+    }
     app.ingest_demo_files();
     app.log(
         "System",
         crate::tui::app::LogLevel::Info,
-        "sage TUI started. Press 1-5 or Tab to navigate, Ctrl+C to quit.",
+        "sage TUI started. Press 1-6 or Tab to navigate, Ctrl+C to quit.",
     );
 
     let res = run_loop(&mut terminal, &mut app);
 
     // Restore terminal.
     let stdout = terminal.backend_mut();
-    stdout.execute(DisableMouseCapture)?;
+    if app.mouse_enabled {
+        let _ = stdout.execute(DisableMouseCapture);
+    }
     stdout.execute(Show)?;
     disable_raw_mode()?;
     stdout.execute(LeaveAlternateScreen)?;
