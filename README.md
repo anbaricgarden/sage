@@ -105,7 +105,7 @@ cargo clippy -- -D warnings
 | Phase | Deliverable | Status |
 |---|---|---|
 | 1 | Foundation: blob store, diff format/parser/applicator, AST parser, Editor agent | **✅ Done** |
-| 2 | Context Intelligence: CodeGraph with pageRank, hybrid retrieval | Planned |
+| 2 | Context Intelligence: CodeGraph with pageRank, hybrid retrieval, ContextAssembler, RepoMap | **✅ Done** |
 | 3 | Multi-Agent Orchestration: Planner, Executor, Reviewer agents | Planned |
 | 4 | Polish and Metrics: prompt compression, token accounting dashboard, benchmarks | Planned |
 
