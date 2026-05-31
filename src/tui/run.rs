@@ -16,7 +16,7 @@ use ratatui::{
 };
 
 use super::app::App;
-use super::events::handle_event;
+use super::events::{handle_event, tick_deferred_copy};
 use super::ui::render;
 
 /// Run the TUI application.
@@ -91,6 +91,7 @@ fn run_loop(
                     app.selection = None;
                 }
             }
+            tick_deferred_copy(app);
             last_tick = std::time::Instant::now();
         }
     }

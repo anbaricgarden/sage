@@ -143,6 +143,9 @@ pub struct App {
     pub last_click_time: Option<Instant>,
     pub last_click_pos: (u16, u16),
     pub click_count: u8,
+    // ── Deferred copy for multi-click debounce ──
+    pub copy_defer_ticks: u8,
+    pub pending_copy_source: Option<SelectionSource>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -227,6 +230,8 @@ impl App {
             last_click_time: None,
             last_click_pos: (0, 0),
             click_count: 0,
+            copy_defer_ticks: 0,
+            pending_copy_source: None,
         }
     }
 

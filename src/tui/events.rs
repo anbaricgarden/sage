@@ -91,12 +91,52 @@ fn auto_scroll(app: &mut App, width: u16) {
 }
 
 /// Write the given text to the system clipboard via the OSC 52 escape sequence.
-fn copy_to_clipboard(text: &str) {
+pub fn copy_to_clipboard(text: &str) {
     use base64::{Engine as _, engine::general_purpose};
     let encoded = general_purpose::STANDARD.encode(text);
     let seq = format!("\x1b]52;c;{}\x07", encoded);
     let _ = io::stdout().write_all(seq.as_bytes());
     let _ = io::stdout().flush();
+}
+
+/// Tick the deferred-copy timer. If it reaches zero, perform the copy and clear state.
+pub fn tick_deferred_copy(app: &mut App) {
+    if app.copy_defer_ticks == 0 {
+        return;
+    }
+    app.copy_defer_ticks -= 1;
+    if app.copy_defer_ticks != 0 {
+        return;
+    }
+    let Some(source) = app.pending_copy_source.take() else {
+        return;
+    };
+    let Some(sel) = app.selection.as_ref().filter(|s| s.source == source) else {
+        return;
+    };
+    let (start, end) = (sel.start.min(sel.end), sel.start.max(sel.end));
+    let source = sel.source;
+    if end <= start {
+        return;
+    }
+    let text = match source {
+        SelectionSource::TaskInput => app.task_input[start..end].to_string(),
+        SelectionSource::Result => {
+            app.last_result.as_ref().map(|r| r[start..end].to_string()).unwrap_or_default()
+        }
+        SelectionSource::FileContent => {
+            app.selected_file.as_ref()
+                .and_then(|f| app.orchestrator.file_contents.get(f))
+                .map(|c| c[start..end].to_string())
+                .unwrap_or_default()
+        }
+        SelectionSource::FileFilter => app.file_filter[start..end].to_string(),
+    };
+    app.selection = None;
+    copy_to_clipboard(&text);
+    app.set_status("Copied to clipboard!", crate::tui::app::StatusKind::Success);
+    app.selection = Some(TextSelection { source, start, end });
+    app.copy_flash_ticks = 5;
 }
 
 /// Return the normalized byte range of an active selection for a given source.
@@ -943,6 +983,10 @@ fn handle_mouse(app: &mut App, kind: MouseEventKind, col: u16, row: u16) {
 
     match kind {
         MouseEventKind::Down(_) => {
+            // Cancel any pending deferred copy when the user clicks again.
+            app.copy_defer_ticks = 0;
+            app.pending_copy_source = None;
+
             let clicks = update_click_tracking(app, col, row);
 
             // Start a new selection if clicking inside a text area.
@@ -1116,10 +1160,13 @@ fn handle_mouse(app: &mut App, kind: MouseEventKind, col: u16, row: u16) {
                 if sel.source == SelectionSource::TaskInput || sel.source == SelectionSource::FileFilter {
                     return;
                 }
-            }
-            // Only copy on single-click + drag, not on double-/triple-click.
-            if app.click_count > 1 {
-                return;
+                let (start, end) = (sel.start.min(sel.end), sel.start.max(sel.end));
+                if end > start && app.click_count > 1 {
+                    // Defer copy for multi-click to avoid duplicate clipboard entries.
+                    app.copy_defer_ticks = 3; // ~300ms at 100ms tick rate
+                    app.pending_copy_source = Some(sel.source);
+                    return;
+                }
             }
             if let Some(sel) = app.selection.take() {
                 let (start, end) = (sel.start.min(sel.end), sel.start.max(sel.end));
