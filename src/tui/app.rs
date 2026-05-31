@@ -11,6 +11,7 @@ pub enum SelectionSource {
     TaskInput,
     Result,
     FileContent,
+    FileFilter,
 }
 
 /// A text selection (byte range inside a specific text area).

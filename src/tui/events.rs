@@ -98,6 +98,35 @@ fn copy_to_clipboard(text: &str) {
     let _ = io::stdout().flush();
 }
 
+/// Return the normalized byte range of an active selection for a given source.
+fn selection_bounds(app: &App, source: SelectionSource) -> Option<(usize, usize)> {
+    app.selection.as_ref().filter(|s| s.source == source).map(|s| {
+        (s.start.min(s.end), s.start.max(s.end))
+    })
+}
+
+/// Delete the selection for the given source and return its start position.
+/// Returns `None` if there is no matching selection.
+fn delete_selection(app: &mut App, source: SelectionSource) -> Option<usize> {
+    if let Some(sel) = app.selection.take() {
+        if sel.source == source {
+            let (start, end) = (sel.start.min(sel.end), sel.start.max(sel.end));
+            match source {
+                SelectionSource::TaskInput => {
+                    app.task_input.replace_range(start..end, "");
+                }
+                SelectionSource::FileFilter => {
+                    app.file_filter.replace_range(start..end, "");
+                }
+                _ => {}
+            }
+            return Some(start);
+        }
+        app.selection = Some(sel);
+    }
+    None
+}
+
 /// Compute the byte index inside `text` from a mouse click within `rect`.
 fn byte_index_at_click(text: &str, rect: ratatui::layout::Rect, scroll: usize, col: u16, row: u16) -> usize {
     let click_row = (row as usize).saturating_sub(rect.y as usize) + scroll;
@@ -165,7 +194,7 @@ fn handle_key(app: &mut App, code: KeyCode, modifiers: KeyModifiers) -> bool {
     match app.screen {
         Screen::Task => handle_task_keys(app, code, modifiers),
         Screen::Logs => handle_log_keys(app, code),
-        Screen::Files => handle_file_keys(app, code),
+        Screen::Files => handle_file_keys(app, code, modifiers),
         Screen::Settings => handle_settings_keys(app, code),
         _ => {}
     }
@@ -178,43 +207,63 @@ fn handle_task_keys(app: &mut App, code: KeyCode, modifiers: KeyModifiers) {
         return; // Block input while running.
     }
 
-    // Dismiss active selection on any edit/navigation key (Esc and Enter already clear it).
-    let is_submit_enter = code == KeyCode::Enter && !modifiers.contains(KeyModifiers::SHIFT);
-    if !matches!(code, KeyCode::Esc) && !is_submit_enter {
-        app.selection = None;
-        app.copy_flash_ticks = 0;
-    }
-
     let ctrl = modifiers.contains(KeyModifiers::CONTROL);
+    let shift = modifiers.contains(KeyModifiers::SHIFT);
     let width = app.task_input_rect.map(|r| r.width).unwrap_or(40);
 
     match code {
+        // ── Character insertion (replaces selection) ──
         KeyCode::Char(c) if !ctrl => {
-            let pos = app.task_cursor.min(app.task_input.len());
+            let pos = delete_selection(app, SelectionSource::TaskInput)
+                .unwrap_or_else(|| app.task_cursor.min(app.task_input.len()));
             app.task_input.insert(pos, c);
             app.task_cursor = (pos + c.len_utf8()).min(app.task_input.len());
             app.task_input_focused = true;
             auto_scroll(app, width);
         }
+
+        // ── Selection: Ctrl+A select all ──
+        KeyCode::Char('a') if ctrl => {
+            app.selection = Some(TextSelection {
+                source: SelectionSource::TaskInput,
+                start: 0,
+                end: app.task_input.len(),
+            });
+            app.task_cursor = app.task_input.len();
+            app.task_input_focused = true;
+            auto_scroll(app, width);
+        }
+
+        // ── Backspace (deletes selection or previous char) ──
         KeyCode::Backspace if ctrl => {
-            let pos = app.task_cursor;
-            let prev = prev_word_boundary(&app.task_input, pos);
-            app.task_input.replace_range(prev..pos, "");
-            app.task_cursor = prev;
+            if let Some(start) = delete_selection(app, SelectionSource::TaskInput) {
+                app.task_cursor = start;
+            } else {
+                let pos = app.task_cursor;
+                let prev = prev_word_boundary(&app.task_input, pos);
+                app.task_input.replace_range(prev..pos, "");
+                app.task_cursor = prev;
+            }
             app.task_input_focused = true;
             auto_scroll(app, width);
         }
         KeyCode::Char('w') if ctrl => {
             // Fallback for terminals that intercept Ctrl+Backspace.
-            let pos = app.task_cursor;
-            let prev = prev_word_boundary(&app.task_input, pos);
-            app.task_input.replace_range(prev..pos, "");
-            app.task_cursor = prev;
+            if let Some(start) = delete_selection(app, SelectionSource::TaskInput) {
+                app.task_cursor = start;
+            } else {
+                let pos = app.task_cursor;
+                let prev = prev_word_boundary(&app.task_input, pos);
+                app.task_input.replace_range(prev..pos, "");
+                app.task_cursor = prev;
+            }
             app.task_input_focused = true;
             auto_scroll(app, width);
         }
         KeyCode::Backspace => {
-            if app.task_cursor > 0 {
+            if let Some(start) = delete_selection(app, SelectionSource::TaskInput) {
+                app.task_cursor = start;
+            } else if app.task_cursor > 0 {
                 let prev = prev_char_boundary(&app.task_input, app.task_cursor);
                 app.task_input.replace_range(prev..app.task_cursor, "");
                 app.task_cursor = prev;
@@ -222,40 +271,122 @@ fn handle_task_keys(app: &mut App, code: KeyCode, modifiers: KeyModifiers) {
             app.task_input_focused = true;
             auto_scroll(app, width);
         }
+
+        // ── Delete (deletes selection or next char) ──
         KeyCode::Delete if ctrl => {
-            let pos = app.task_cursor;
-            let next = next_word_boundary(&app.task_input, pos);
-            app.task_input.replace_range(pos..next, "");
+            if let Some(start) = delete_selection(app, SelectionSource::TaskInput) {
+                app.task_cursor = start;
+            } else {
+                let pos = app.task_cursor;
+                let next = next_word_boundary(&app.task_input, pos);
+                app.task_input.replace_range(pos..next, "");
+            }
             app.task_input_focused = true;
             auto_scroll(app, width);
         }
         KeyCode::Delete => {
-            let next = next_char_boundary(&app.task_input, app.task_cursor);
-            app.task_input.replace_range(app.task_cursor..next, "");
+            if let Some(start) = delete_selection(app, SelectionSource::TaskInput) {
+                app.task_cursor = start;
+            } else {
+                let next = next_char_boundary(&app.task_input, app.task_cursor);
+                app.task_input.replace_range(app.task_cursor..next, "");
+            }
+            app.task_input_focused = true;
+            auto_scroll(app, width);
+        }
+
+        // ── Left ──
+        KeyCode::Left if ctrl && shift => {
+            let new_cursor = prev_word_boundary(&app.task_input, app.task_cursor);
+            extend_task_selection(app, new_cursor);
+            app.task_cursor = new_cursor;
             app.task_input_focused = true;
             auto_scroll(app, width);
         }
         KeyCode::Left if ctrl => {
-            app.task_cursor = prev_word_boundary(&app.task_input, app.task_cursor);
+            if let Some((sel_start, _)) = selection_bounds(app, SelectionSource::TaskInput) {
+                app.selection = None;
+                app.task_cursor = sel_start;
+            } else {
+                app.task_cursor = prev_word_boundary(&app.task_input, app.task_cursor);
+            }
+            app.copy_flash_ticks = 0;
+            app.task_input_focused = true;
+            auto_scroll(app, width);
+        }
+        KeyCode::Left if shift => {
+            let new_cursor = prev_char_boundary(&app.task_input, app.task_cursor);
+            extend_task_selection(app, new_cursor);
+            app.task_cursor = new_cursor;
             app.task_input_focused = true;
             auto_scroll(app, width);
         }
         KeyCode::Left => {
-            app.task_cursor = prev_char_boundary(&app.task_input, app.task_cursor);
+            if let Some((sel_start, _)) = selection_bounds(app, SelectionSource::TaskInput) {
+                app.selection = None;
+                app.task_cursor = sel_start;
+            } else {
+                app.task_cursor = prev_char_boundary(&app.task_input, app.task_cursor);
+            }
+            app.copy_flash_ticks = 0;
+            app.task_input_focused = true;
+            auto_scroll(app, width);
+        }
+
+        // ── Right ──
+        KeyCode::Right if ctrl && shift => {
+            let new_cursor = next_word_boundary(&app.task_input, app.task_cursor);
+            extend_task_selection(app, new_cursor);
+            app.task_cursor = new_cursor;
             app.task_input_focused = true;
             auto_scroll(app, width);
         }
         KeyCode::Right if ctrl => {
-            app.task_cursor = next_word_boundary(&app.task_input, app.task_cursor);
+            if let Some((_, sel_end)) = selection_bounds(app, SelectionSource::TaskInput) {
+                app.selection = None;
+                app.task_cursor = sel_end;
+            } else {
+                app.task_cursor = next_word_boundary(&app.task_input, app.task_cursor);
+            }
+            app.copy_flash_ticks = 0;
+            app.task_input_focused = true;
+            auto_scroll(app, width);
+        }
+        KeyCode::Right if shift => {
+            let new_cursor = next_char_boundary(&app.task_input, app.task_cursor);
+            extend_task_selection(app, new_cursor);
+            app.task_cursor = new_cursor;
             app.task_input_focused = true;
             auto_scroll(app, width);
         }
         KeyCode::Right => {
-            app.task_cursor = next_char_boundary(&app.task_input, app.task_cursor);
+            if let Some((_, sel_end)) = selection_bounds(app, SelectionSource::TaskInput) {
+                app.selection = None;
+                app.task_cursor = sel_end;
+            } else {
+                app.task_cursor = next_char_boundary(&app.task_input, app.task_cursor);
+            }
+            app.copy_flash_ticks = 0;
+            app.task_input_focused = true;
+            auto_scroll(app, width);
+        }
+
+        // ── Up ──
+        KeyCode::Up if shift => {
+            let (row, col) = byte_index_to_visual_pos(&app.task_input, app.task_cursor, width);
+            let new_cursor = if row > 0 {
+                visual_pos_to_byte_index(&app.task_input, row - 1, col, width)
+            } else {
+                0
+            };
+            extend_task_selection(app, new_cursor);
+            app.task_cursor = new_cursor;
             app.task_input_focused = true;
             auto_scroll(app, width);
         }
         KeyCode::Up => {
+            app.selection = None;
+            app.copy_flash_ticks = 0;
             let (row, col) = byte_index_to_visual_pos(&app.task_input, app.task_cursor, width);
             if row > 0 {
                 app.task_cursor = visual_pos_to_byte_index(&app.task_input, row - 1, col, width);
@@ -265,7 +396,24 @@ fn handle_task_keys(app: &mut App, code: KeyCode, modifiers: KeyModifiers) {
             app.task_input_focused = true;
             auto_scroll(app, width);
         }
+
+        // ── Down ──
+        KeyCode::Down if shift => {
+            let lines = wrap_text(&app.task_input, width);
+            let (row, col) = byte_index_to_visual_pos(&app.task_input, app.task_cursor, width);
+            let new_cursor = if row + 1 < lines.len() {
+                visual_pos_to_byte_index(&app.task_input, row + 1, col, width)
+            } else {
+                app.task_input.len()
+            };
+            extend_task_selection(app, new_cursor);
+            app.task_cursor = new_cursor;
+            app.task_input_focused = true;
+            auto_scroll(app, width);
+        }
         KeyCode::Down => {
+            app.selection = None;
+            app.copy_flash_ticks = 0;
             let lines = wrap_text(&app.task_input, width);
             let (row, col) = byte_index_to_visual_pos(&app.task_input, app.task_cursor, width);
             if row + 1 < lines.len() {
@@ -276,7 +424,20 @@ fn handle_task_keys(app: &mut App, code: KeyCode, modifiers: KeyModifiers) {
             app.task_input_focused = true;
             auto_scroll(app, width);
         }
+
+        // ── Home ──
+        KeyCode::Home if shift => {
+            let (row, _) = byte_index_to_visual_pos(&app.task_input, app.task_cursor, width);
+            let lines = wrap_text(&app.task_input, width);
+            let new_cursor = lines.get(row).map(|(s, _)| *s).unwrap_or(0);
+            extend_task_selection(app, new_cursor);
+            app.task_cursor = new_cursor;
+            app.task_input_focused = true;
+            auto_scroll(app, width);
+        }
         KeyCode::Home => {
+            app.selection = None;
+            app.copy_flash_ticks = 0;
             let (row, _) = byte_index_to_visual_pos(&app.task_input, app.task_cursor, width);
             let lines = wrap_text(&app.task_input, width);
             if let Some((s, _)) = lines.get(row) {
@@ -285,7 +446,20 @@ fn handle_task_keys(app: &mut App, code: KeyCode, modifiers: KeyModifiers) {
             app.task_input_focused = true;
             auto_scroll(app, width);
         }
+
+        // ── End ──
+        KeyCode::End if shift => {
+            let (row, _) = byte_index_to_visual_pos(&app.task_input, app.task_cursor, width);
+            let lines = wrap_text(&app.task_input, width);
+            let new_cursor = lines.get(row).map(|(_, e)| *e).unwrap_or(app.task_input.len());
+            extend_task_selection(app, new_cursor);
+            app.task_cursor = new_cursor;
+            app.task_input_focused = true;
+            auto_scroll(app, width);
+        }
         KeyCode::End => {
+            app.selection = None;
+            app.copy_flash_ticks = 0;
             let (row, _) = byte_index_to_visual_pos(&app.task_input, app.task_cursor, width);
             let lines = wrap_text(&app.task_input, width);
             if let Some((_, e)) = lines.get(row) {
@@ -294,14 +468,20 @@ fn handle_task_keys(app: &mut App, code: KeyCode, modifiers: KeyModifiers) {
             app.task_input_focused = true;
             auto_scroll(app, width);
         }
-        KeyCode::Enter if modifiers.contains(KeyModifiers::SHIFT) => {
-            let pos = app.task_cursor.min(app.task_input.len());
+
+        // ── Newline (Shift+Enter) ──
+        KeyCode::Enter if shift => {
+            let pos = delete_selection(app, SelectionSource::TaskInput)
+                .unwrap_or_else(|| app.task_cursor.min(app.task_input.len()));
             app.task_input.insert(pos, '\n');
             app.task_cursor = pos + 1;
             app.task_input_focused = true;
             auto_scroll(app, width);
         }
+
+        // ── Submit (Enter) ──
         KeyCode::Enter => {
+            delete_selection(app, SelectionSource::TaskInput);
             app.execute_task();
             app.task_input.clear();
             app.task_cursor = 0;
@@ -309,6 +489,7 @@ fn handle_task_keys(app: &mut App, code: KeyCode, modifiers: KeyModifiers) {
             app.selection = None;
             app.copy_flash_ticks = 0;
         }
+
         KeyCode::PageUp => {
             app.result_scroll = app.result_scroll.saturating_sub(10);
         }
@@ -324,6 +505,32 @@ fn handle_task_keys(app: &mut App, code: KeyCode, modifiers: KeyModifiers) {
             app.copy_flash_ticks = 0;
         }
         _ => {}
+    }
+}
+
+/// Extend or create the task-input selection so that its active end becomes `new_cursor`.
+fn extend_task_selection(app: &mut App, new_cursor: usize) {
+    if let Some(sel) = app.selection.as_mut().filter(|s| s.source == SelectionSource::TaskInput) {
+        sel.end = new_cursor;
+    } else {
+        app.selection = Some(TextSelection {
+            source: SelectionSource::TaskInput,
+            start: app.task_cursor,
+            end: new_cursor,
+        });
+    }
+}
+
+/// Extend or create the file-filter selection so that its active end becomes `new_cursor`.
+fn extend_file_filter_selection(app: &mut App, new_cursor: usize) {
+    if let Some(sel) = app.selection.as_mut().filter(|s| s.source == SelectionSource::FileFilter) {
+        sel.end = new_cursor;
+    } else {
+        app.selection = Some(TextSelection {
+            source: SelectionSource::FileFilter,
+            start: app.file_filter_cursor,
+            end: new_cursor,
+        });
     }
 }
 
@@ -445,9 +652,9 @@ fn handle_settings_keys(app: &mut App, code: KeyCode) {
     }
 }
 
-fn handle_file_keys(app: &mut App, code: KeyCode) {
+fn handle_file_keys(app: &mut App, code: KeyCode, modifiers: KeyModifiers) {
     if app.file_filter_focused {
-        handle_file_filter_keys(app, code);
+        handle_file_filter_keys(app, code, modifiers);
         return;
     }
 
@@ -520,32 +727,99 @@ fn handle_file_keys(app: &mut App, code: KeyCode) {
     }
 }
 
-fn handle_file_filter_keys(app: &mut App, code: KeyCode) {
+fn handle_file_filter_keys(app: &mut App, code: KeyCode, modifiers: KeyModifiers) {
+    let shift = modifiers.contains(KeyModifiers::SHIFT);
+    let ctrl = modifiers.contains(KeyModifiers::CONTROL);
+
     match code {
-        KeyCode::Char(c) => {
-            let pos = app.file_filter_cursor.min(app.file_filter.len());
+        // ── Character insertion (replaces selection) ──
+        KeyCode::Char(c) if !ctrl => {
+            let pos = delete_selection(app, SelectionSource::FileFilter)
+                .unwrap_or_else(|| app.file_filter_cursor.min(app.file_filter.len()));
             app.file_filter.insert(pos, c);
             app.file_filter_cursor = (pos + c.len_utf8()).min(app.file_filter.len());
         }
+
+        // ── Select all ──
+        KeyCode::Char('a') if ctrl => {
+            app.selection = Some(TextSelection {
+                source: SelectionSource::FileFilter,
+                start: 0,
+                end: app.file_filter.len(),
+            });
+            app.file_filter_cursor = app.file_filter.len();
+        }
+
+        // ── Backspace ──
         KeyCode::Backspace => {
-            if app.file_filter_cursor > 0 {
+            if let Some(start) = delete_selection(app, SelectionSource::FileFilter) {
+                app.file_filter_cursor = start;
+            } else if app.file_filter_cursor > 0 {
                 let prev = prev_char_boundary(&app.file_filter, app.file_filter_cursor);
                 app.file_filter.replace_range(prev..app.file_filter_cursor, "");
                 app.file_filter_cursor = prev;
             }
         }
+
+        // ── Delete ──
         KeyCode::Delete => {
-            let next = next_char_boundary(&app.file_filter, app.file_filter_cursor);
-            app.file_filter.replace_range(app.file_filter_cursor..next, "");
+            if let Some(start) = delete_selection(app, SelectionSource::FileFilter) {
+                app.file_filter_cursor = start;
+            } else {
+                let next = next_char_boundary(&app.file_filter, app.file_filter_cursor);
+                app.file_filter.replace_range(app.file_filter_cursor..next, "");
+            }
+        }
+
+        // ── Left ──
+        KeyCode::Left if shift => {
+            let new_cursor = prev_char_boundary(&app.file_filter, app.file_filter_cursor);
+            extend_file_filter_selection(app, new_cursor);
+            app.file_filter_cursor = new_cursor;
         }
         KeyCode::Left => {
-            app.file_filter_cursor = prev_char_boundary(&app.file_filter, app.file_filter_cursor);
+            if let Some((sel_start, _)) = selection_bounds(app, SelectionSource::FileFilter) {
+                app.selection = None;
+                app.file_filter_cursor = sel_start;
+            } else {
+                app.file_filter_cursor = prev_char_boundary(&app.file_filter, app.file_filter_cursor);
+            }
+        }
+
+        // ── Right ──
+        KeyCode::Right if shift => {
+            let new_cursor = next_char_boundary(&app.file_filter, app.file_filter_cursor);
+            extend_file_filter_selection(app, new_cursor);
+            app.file_filter_cursor = new_cursor;
         }
         KeyCode::Right => {
-            app.file_filter_cursor = next_char_boundary(&app.file_filter, app.file_filter_cursor);
+            if let Some((_, sel_end)) = selection_bounds(app, SelectionSource::FileFilter) {
+                app.selection = None;
+                app.file_filter_cursor = sel_end;
+            } else {
+                app.file_filter_cursor = next_char_boundary(&app.file_filter, app.file_filter_cursor);
+            }
         }
-        KeyCode::Home => app.file_filter_cursor = 0,
-        KeyCode::End => app.file_filter_cursor = app.file_filter.len(),
+
+        KeyCode::Home if shift => {
+            extend_file_filter_selection(app, 0);
+            app.file_filter_cursor = 0;
+        }
+        KeyCode::Home => {
+            app.selection = None;
+            app.file_filter_cursor = 0;
+        }
+
+        KeyCode::End if shift => {
+            let len = app.file_filter.len();
+            extend_file_filter_selection(app, len);
+            app.file_filter_cursor = len;
+        }
+        KeyCode::End => {
+            app.selection = None;
+            app.file_filter_cursor = app.file_filter.len();
+        }
+
         KeyCode::Esc => {
             app.file_filter_focused = false;
             app.file_filter.clear();
@@ -555,6 +829,8 @@ fn handle_file_filter_keys(app: &mut App, code: KeyCode) {
         }
         KeyCode::Enter => {
             app.file_filter_focused = false;
+            app.selection = None;
+            app.copy_flash_ticks = 0;
         }
         _ => {}
     }
@@ -618,6 +894,18 @@ fn handle_mouse(app: &mut App, kind: MouseEventKind, col: u16, row: u16) {
                     });
                     app.copy_flash_ticks = 0;
                 }
+            } else if app.screen == Screen::Files && app.file_filter_rect.is_some_and(|r| contains(r, col, row)) {
+                let rect = app.file_filter_rect.unwrap();
+                let click_col = col.saturating_sub(rect.x) as usize;
+                let idx = click_col.min(app.file_filter.len());
+                app.selection = Some(TextSelection {
+                    source: SelectionSource::FileFilter,
+                    start: idx,
+                    end: idx,
+                });
+                app.file_filter_focused = true;
+                app.file_filter_cursor = idx;
+                app.copy_flash_ticks = 0;
             } else {
                 // Click outside any text area: clear selection.
                 app.selection = None;
@@ -651,11 +939,6 @@ fn handle_mouse(app: &mut App, kind: MouseEventKind, col: u16, row: u16) {
                         app.selected_file = Some(entry.path.clone());
                     }
                 }
-            } else if app.screen == Screen::Files && app.file_filter_rect.is_some_and(|r| contains(r, col, row)) {
-                app.file_filter_focused = true;
-                let rect = app.file_filter_rect.unwrap();
-                let click_col = col.saturating_sub(rect.x) as usize;
-                app.file_filter_cursor = click_col.min(app.file_filter.len());
             } else if app.screen == Screen::Task && in_task_input && app.selection.is_none() {
                 // Only place cursor if we didn't start a selection (selection start
                 // is handled above before this branch).
@@ -686,38 +969,42 @@ fn handle_mouse(app: &mut App, kind: MouseEventKind, col: u16, row: u16) {
         }
         MouseEventKind::Drag(_) => {
             if let Some(sel) = &mut app.selection {
-                let (text, rect, scroll): (&str, _, _) = match sel.source {
-                    SelectionSource::TaskInput => (
-                        &app.task_input,
-                        app.task_input_rect.unwrap(),
-                        app.task_scroll,
-                    ),
+                let idx = match sel.source {
+                    SelectionSource::TaskInput => {
+                        byte_index_at_click(&app.task_input, app.task_input_rect.unwrap(), app.task_scroll, col, row)
+                    }
                     SelectionSource::Result => {
                         if let Some(result) = &app.last_result {
-                            (result.as_str(), app.result_rect.unwrap(), app.result_scroll)
+                            byte_index_at_click(result, app.result_rect.unwrap(), app.result_scroll, col, row)
                         } else {
                             return;
                         }
                     }
                     SelectionSource::FileContent => {
                         if let Some(content) = app.selected_file.as_ref().and_then(|f| app.orchestrator.file_contents.get(f)) {
-                            (content.as_str(), app.file_content_rect.unwrap(), app.file_content_scroll)
+                            byte_index_at_click(content, app.file_content_rect.unwrap(), app.file_content_scroll, col, row)
                         } else {
                             return;
                         }
                     }
+                    SelectionSource::FileFilter => {
+                        let rect = app.file_filter_rect.unwrap();
+                        let click_col = col.saturating_sub(rect.x) as usize;
+                        click_col.min(app.file_filter.len())
+                    }
                 };
-                let idx = byte_index_at_click(text, rect, scroll, col, row);
                 sel.end = idx;
             }
         }
         MouseEventKind::Up(_) => {
+            if let Some(sel) = app.selection.as_ref() {
+                // Input boxes: keep selection for editing, do NOT copy.
+                if sel.source == SelectionSource::TaskInput || sel.source == SelectionSource::FileFilter {
+                    return;
+                }
+            }
             if let Some(sel) = app.selection.take() {
-                let (start, end) = if sel.start < sel.end {
-                    (sel.start, sel.end)
-                } else {
-                    (sel.end, sel.start)
-                };
+                let (start, end) = (sel.start.min(sel.end), sel.start.max(sel.end));
                 if end > start {
                     let text = match sel.source {
                         SelectionSource::TaskInput => app.task_input[start..end].to_string(),
@@ -730,6 +1017,7 @@ fn handle_mouse(app: &mut App, kind: MouseEventKind, col: u16, row: u16) {
                                 .map(|c| c[start..end].to_string())
                                 .unwrap_or_default()
                         }
+                        SelectionSource::FileFilter => app.file_filter[start..end].to_string(),
                     };
                     copy_to_clipboard(&text);
                     app.set_status("Copied to clipboard!", crate::tui::app::StatusKind::Success);

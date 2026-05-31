@@ -479,7 +479,26 @@ fn render_files(frame: &mut Frame, app: &mut App, area: Rect) {
     let filter_text = if app.file_filter.is_empty() && !app.file_filter_focused {
         Line::from(Span::styled("Search files... (press /)", Style::default().fg(TEXT_MUTED)))
     } else {
-        Line::from(Span::styled(&app.file_filter, Style::default().fg(TEXT)))
+        let sel = app.selection.as_ref().filter(|s| s.source == SelectionSource::FileFilter).map(|s| (s.start, s.end));
+        if let Some((sel_start, sel_end)) = sel {
+            let (start, end) = (sel_start.min(sel_end), sel_start.max(sel_end));
+            let mut spans = Vec::new();
+            if start > 0 {
+                spans.push(Span::styled(&app.file_filter[..start], Style::default().fg(TEXT)));
+            }
+            if end > start {
+                spans.push(Span::styled(
+                    &app.file_filter[start..end],
+                    Style::default().fg(TEXT).bg(SELECT_BG),
+                ));
+            }
+            if end < app.file_filter.len() {
+                spans.push(Span::styled(&app.file_filter[end..], Style::default().fg(TEXT)));
+            }
+            Line::from(spans)
+        } else {
+            Line::from(Span::styled(&app.file_filter, Style::default().fg(TEXT)))
+        }
     };
     frame.render_widget(Paragraph::new(filter_text), filter_inner);
 
