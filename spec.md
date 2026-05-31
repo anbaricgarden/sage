@@ -1,7 +1,6 @@
-
 # The Token-Efficient Coding Agent: A Comprehensive Engineering Specification
 
-**TL;DR —** This specification describes a multi-agent coding system designed from first principles to minimize both input context tokens and output generation tokens at every architectural layer. The design combines **hash-anchored diff blocks** (93% output token reduction), **AST-based CodeGraph with pageRank scoring** (precision context retrieval), **specialized sub-agent models** (52% of budget to a code-specific editor), **speculative decoding with a 1B-parameter drafter** (2.6x inference speedup), and **non-linear action graph execution** (parallel speculative paths with early termination). Cumulatively, these strategies reduce per-task token consumption from ~10,000 to ~950 tokens — a **90.5% reduction** versus a naive baseline — while improving edit accuracy and fault recovery.
+**TL;DR —** This specification describes a multi-agent coding system designed from first principles to minimize both input context tokens and output generation tokens at every architectural layer. The design combines **hash-anchored diff blocks** (93% output token reduction), **AST-based CodeGraph with pageRank scoring** (precision context retrieval), **specialized sub-agent models** (52% of budget to a code-specific editor), and **non-linear action graph execution** (parallel speculative paths with early termination). Cumulatively, these strategies reduce per-task token consumption from ~10,000 to ~1,400 tokens — an **86% reduction** versus a naive baseline — while improving edit accuracy and fault recovery.
 
 ---
 
@@ -27,8 +26,6 @@ The guiding principle is **signal-to-noise maximization**: every token sent to o
 | **Hash-anchored mini-diff format** | Only changed lines + surrounding context hashes; no full file restatement [^36^][^37^] | −93% output for edit operations |
 | **AST-based CodeGraph (tree-sitter)** | Symbol-level dependency tracking with pageRank relevance scoring | −58% input context (load only relevant symbols) |
 | **Hybrid retrieval: AST + embeddings** | Structural precision + semantic similarity; no false negatives on type dependencies | −15% input (fewer retrieved files) |
-| **Speculative decoding (1B drafter)** | Small model drafts tokens accepted by large model; 2–3x speedup [^16^][^17^] | −20% wall-clock time, −15% KV memory |
-| **Prefix caching (exact + fuzzy)** | Unchanged prompt prefixes reused across turns; cache hit for system prompt, tools, file headers [^23^][^24^] | −60% input tokens on cache hits |
 | **Action graph execution** | Non-linear loop: parallel branches, speculative paths, early termination on success [^45^] | −35% turns per task |
 | **Prompt compression (LLMLingua-2)** | On-the-fly pruning of redundant tokens in context before sending to model [^29^][^31^] | −25% input tokens |
 | **Tool batching + result summarization** | Parallel tool calls; compressed tool results (not raw output) injected into context [^25^] | −40% overhead per tool call |
@@ -42,7 +39,7 @@ The guiding principle is **signal-to-noise maximization**: every token sent to o
 
 ### 2.1 Why Multi-Agent?
 
-The single most impactful architectural decision for token efficiency is splitting the monolithic agent into **specialized sub-agents**, each running a model sized precisely for its task. A 200B-parameter frontier model is overkill for planning and review — a 7B-parameter model fine-tuned for those specific tasks produces equivalent quality output at 1/30th the inference cost. Conversely, code editing benefits enormously from a 32B-parameter code-specialist model with structured output fine-tuning. The key insight from recent research [^8^][^45^] is that **model capability should match task complexity** — and token budgets should be allocated proportionally.
+The single most impactful architectural decision for token efficiency is splitting the monolithic agent into **specialized sub-agents**, each running a model sized precisely for its task. A 200B-parameter frontier model is overkill for planning and review — a 7B-parameter model produces equivalent quality output at 1/30th the inference cost for those specific tasks. Conversely, code editing benefits enormously from a 32B-parameter code-specialist model. The key insight from recent research [^8^][^45^] is that **model capability should match task complexity** — and token budgets should be allocated proportionally.
 
 ### 2.2 The Four-Agent Design
 
@@ -54,21 +51,19 @@ The system comprises four distinct agents, each with a dedicated model, context 
 | **Editor** | Qwen2.5-Coder-32B-Instruct or DeepSeek-Coder-V2 | 32B | 128K | 52% of task budget | Hash-anchored diff generation, speculative edits, format validation |
 | **Executor** | Claude 3.5 Sonnet or GPT-4o-mini | 175B (API) | 200K | 28% of task budget | Parallel tool execution, result summarization, error recovery, streaming output |
 | **Reviewer** | Qwen2.5-7B-Instruct | 7B | 32K | 8% of task budget | Semantic validation, drift detection, quality gating, rollback decisions |
-| **Orchestrator** | Hardcoded state machine | N/A | N/A | 4% overhead | Agent dispatch, context routing, KV cache management, checkpoint/rollback |
+| **Orchestrator** | Hardcoded state machine | N/A | N/A | 4% overhead | Agent dispatch, context routing, checkpoint/rollback |
 
 The **Planner** receives only the user's task description and high-level repository metadata. It does not see file contents — its job is to decompose the task into an **action graph** (Section 7) and allocate token budgets to each subtask. Running a 14B model for this phase costs approximately 200–400 tokens versus 2,000+ for a frontier model, with no quality degradation for planning tasks.
 
-The **Editor** is the token-heaviest phase and receives the full context assembled by the Context Assembler (Section 4). It generates hash-anchored diff blocks (Section 3) using structured output mode. The editor model should be fine-tuned specifically on the diff format — this single optimization reduces format errors by 60% and eliminates retry loops that burn tokens.
+The **Editor** is the token-heaviest phase and receives the full context assembled by the Context Assembler (Section 4). It generates hash-anchored diff blocks (Section 3) using structured output mode.
 
 The **Executor** handles all tool calls: file system operations, test execution, linter invocation, and git commands. It batches tool calls in parallel (Section 6) and summarizes results before injecting them into context. Using an API model here is acceptable because tool execution is typically I/O-bound, not generation-bound — the model's job is result interpretation, not code synthesis.
 
 The **Reviewer** performs lightweight semantic validation: checking that edits preserve type signatures, don't break imports, and maintain test coverage. It runs a 7B model because review is primarily pattern matching — checking AST invariants, not generating creative code. The reviewer can trigger rollback (restoring from a content-addressed checkpoint) or approve the edit for final application.
 
-### 2.3 Context Isolation and KV Cache Management
+### 2.3 Context Isolation
 
-Each agent operates with **isolated context** — the Planner's KV cache is not shared with the Editor. This is intentional: the Planner's context (task description + repo map) is structurally different from the Editor's context (file contents + diff format instructions). However, within a single agent's execution, **prefix caching** (Section 9.2) aggressively reuses KV state for unchanged portions of the prompt.
-
-The Orchestrator maintains a **KV cache registry** that tracks which prompt prefixes are cached for each agent. When dispatching a subtask, it reuses the longest matching cached prefix, appending only the new or changed context. This reduces input tokens by 40–60% on cache hits [^23^].
+Each agent operates with **isolated context** — the Planner's context is not shared with the Editor. This is intentional: the Planner's context (task description + repo map) is structurally different from the Editor's context (file contents + diff format instructions). The Orchestrator routes only the necessary context to each agent, appending new or changed context for each turn.
 
 ![Multi-Agent Loop](multi_agent_loop.png)
 
@@ -114,7 +109,7 @@ This design eliminates an entire class of "edit application failed" errors that 
 
 The Editor agent generates edits **speculatively** — it produces multiple candidate diff blocks for ambiguous edit locations and the Executor attempts to apply them in order until one succeeds. This is inspired by the Blazedit research [^37^], which found that speculative candidate generation reduces the need for costly regeneration loops by 40%.
 
-The speculative strategy works as follows: when the Editor encounters an ambiguous edit location (e.g., a function name that appears in multiple files), it generates up to 3 candidate diff blocks, each with a different context window size and anchor hash. The Executor attempts them in order of confidence score (computed by the Editor based on context match quality). The first successful application terminates the speculation; failures are logged for fine-tuning data collection.
+The speculative strategy works as follows: when the Editor encounters an ambiguous edit location (e.g., a function name that appears in multiple files), it generates up to 3 candidate diff blocks, each with a different context window size and anchor hash. The Executor attempts them in order of confidence score (computed by the Editor based on context match quality). The first successful application terminates the speculation.
 
 ### 3.5 Token Savings Analysis
 
@@ -180,9 +175,8 @@ This lazy loading is enabled by a **context request protocol** between the Edito
 The CodeGraph maintains a **change journal** of all file modifications. When a file changes, the system computes a **structural diff** (AST-level, not text-level) of the affected symbols. This diff is used to:
 
 - Update the CodeGraph incrementally (O(k) instead of O(n))
-- Invalidate prefix cache entries for changed files
 - Update the embedding index for changed symbols
-- Record fine-tuning data (before/after pairs for the Editor model)
+- Invalidate any cached context entries for changed files
 
 The structural diff format records symbol-level operations: `ADD_SYMBOL`, `REMOVE_SYMBOL`, `MODIFY_SIGNATURE`, `MODIFY_BODY`, `MOVE_SYMBOL`. This is more semantically meaningful than text diffs and enables better context invalidation decisions.
 
@@ -315,7 +309,7 @@ class ActionGraph:
 
 ### 7.3 Speculative Path Execution
 
-The Planner generates **speculative branches** in the action graph: alternative approaches to the same subtask that are executed in parallel. The first branch to succeed causes all sibling branches to be cancelled. This is inspired by speculative decoding at the agent level [^37^]:
+The Planner generates **speculative branches** in the action graph: alternative approaches to the same subtask that are executed in parallel. The first branch to succeed causes all sibling branches to be cancelled. This is inspired by speculative execution at the agent level [^37^]:
 
 | Branch | Strategy | Success Condition |
 |---|---|---|
@@ -376,59 +370,9 @@ The full conversation history is only loaded on explicit request (e.g., the user
 
 ---
 
-## 9. Inference Optimization Layer
+## 9. Content-Addressed Storage and Git Integration
 
-### 9.1 Speculative Decoding with Small Drafter
-
-**Speculative decoding** [^16^][^17^] is an inference-level optimization where a small "drafter" model generates candidate tokens that are verified (and potentially corrected) by the larger "target" model in parallel. The key insight is that the drafter can generate K tokens in the time the target model generates 1, and if even 60–70% of drafter tokens are accepted, the effective speedup is 2–3x.
-
-For the coding agent, the drafter model is a **1B-parameter code-specific model** (e.g., TinyLlama-1.1B fine-tuned on code diffs) that runs on the same GPU as the target model. The drafter is particularly effective for code generation because:
-
-- Code has high local predictability (syntax patterns, common idioms).
-- The hash-anchored diff format has a rigid structure that the drafter learns quickly.
-- The target model (32B Editor) only needs to verify semantic correctness, not generate every token from scratch.
-
-| Configuration | Tokens/sec | Latency (per 1K tokens) | Speedup |
-|---|---|---|---|
-| Baseline (32B, no speculation) | 45 | 22.2s | 1.0x |
-| + 1B drafter, K=4 | 98 | 10.2s | **2.2x** |
-| + 1B drafter, K=8 | 117 | 8.5s | **2.6x** |
-| + 1B drafter, K=4, 4-bit KV cache | 135 | 7.4s | **3.0x** |
-
-The optimal K (speculation depth) is determined dynamically based on the drafter's acceptance rate on recent tokens. If acceptance drops below 50%, K is reduced; if it exceeds 80%, K is increased.
-
-### 9.2 Prefix Caching (Exact and Fuzzy)
-
-**Prefix caching** stores the KV cache for prompt prefixes that are reused across turns. When a new prompt shares a prefix with a previous prompt, the cached KV values are reused, eliminating the need to recompute attention for those tokens [^23^][^24^].
-
-The system implements two levels of prefix caching:
-
-**Exact prefix matching**: The full prompt prefix (system prompt + tool descriptions + file headers) must match character-for-character. This provides 100% cache hits for the static portions of the prompt across all turns with the same agent.
-
-**Fuzzy prefix matching**: The prefix matches except for certain "hot-swappable" regions (e.g., the current file contents in an edit session). The system pre-computes KV caches for multiple variants of these regions and selects the closest match, then computes only the diff region.
-
-| Cache Type | Hit Rate | Tokens Saved per Hit | Implementation |
-|---|---|---|---|
-| System prompt | 100% (across all turns) | 500–1,500 | Exact match on system prompt + tools |
-| File context | 60–80% (within session) | 1,000–8,000 | Fuzzy match on file headers; diff on body |
-| Tool descriptions | 100% | 200–500 | Exact match on tool schema |
-| Conversation history | 40–60% | 500–2,000 | Sliding window on recent turns |
-
-### 9.3 KV Cache Quantization
-
-The KV cache (key-value activations stored during autoregressive generation) is the primary memory bottleneck for long-context inference. The system applies **4-bit KV cache quantization** (per-channel or per-token scaling) to reduce memory usage by 4x, enabling longer effective context windows and larger batch sizes [^16^].
-
-Combined with **paged attention** (vLLM-style block-based KV memory management), this allows the Editor agent to maintain context windows of 128K+ tokens with only 8GB of GPU memory for the KV cache — enabling the Editor to see entire large files or multiple medium files without context truncation.
-
-### 9.4 Continuous Batching
-
-The inference layer uses **continuous batching** (in-flight batching) where new requests are added to the GPU batch as soon as slots become available, rather than waiting for the entire current batch to complete. This improves GPU utilization from ~60% (static batching) to ~90%, reducing wall-clock time and effectively increasing throughput without increasing token consumption.
-
----
-
-## 10. Content-Addressed Storage and Git Integration
-
-### 10.1 Blob Store Design
+### 9.1 Blob Store Design
 
 All file contents are stored in a **content-addressed blob store** modeled after Git's object database:
 
@@ -446,7 +390,7 @@ class BlobStore:
 
 The store is backed by a combination of in-memory LRU cache (hot blobs), local disk (warm blobs), and optional remote storage (cold blobs). Because identical content always produces the same hash, deduplication is automatic — if two files have identical contents, they share the same blob.
 
-### 10.2 Incremental Diff Application
+### 9.2 Incremental Diff Application
 
 When the Editor agent produces a hash-anchored diff block, the Executor applies it using the **three-way merge algorithm**:
 
@@ -456,7 +400,7 @@ When the Editor agent produces a hash-anchored diff block, the Executor applies 
 
 If the current file matches the base (i.e., no external modifications), the diff applies cleanly. If the current file differs from the base (concurrent modification), the system attempts an automatic three-way merge. If the merge produces conflicts, the task is returned to the Editor with conflict markers and context.
 
-### 10.3 Checkpoint and Rollback
+### 9.3 Checkpoint and Rollback
 
 Every successful edit application creates a **checkpoint** — a snapshot of the entire working tree's blob hashes. Checkpoints are cheap (O(1) per file, just storing hash pointers) and enable instant rollback:
 
@@ -472,41 +416,9 @@ The Reviewer agent can trigger rollback to any previous checkpoint if validation
 
 ---
 
-## 11. Fine-Tuning and Model Distillation Strategy
+## 10. Token Economics and Measurement Framework
 
-### 11.1 Editor Model Fine-Tuning
-
-The Editor agent's model (32B code specialist) should be **fine-tuned on three tasks**:
-
-1. **Hash-anchored diff generation**: Training data consists of (file_before, file_after, diff_block) triples. The model learns to generate correctly formatted diff blocks with accurate anchor hashes. This reduces format errors by 60% and eliminates the need for format validation retries.
-2. **Speculative edit candidate generation**: Training data consists of (ambiguous_location, candidate_diffs, correct_candidate) triples. The model learns to generate multiple candidates ranked by confidence.
-3. **Context-efficient editing**: Training data includes tasks with varying context sizes, teaching the model to produce correct edits with minimal surrounding context (reducing anchor hash collisions).
-
-The training data is collected automatically from successful agent runs: every accepted edit becomes a training example; every rejected edit (with the corrected version) becomes a negative example.
-
-### 11.2 Drafter Model Distillation
-
-The 1B-parameter speculative drafter is distilled from the 32B Editor model using **sequence-level knowledge distillation**:
-
-1. Generate a large corpus of code edits using the 32B Editor.
-2. Train the 1B drafter to predict the same token distribution as the 32B model on these edits.
-3. Apply **speculative distillation**: train the drafter specifically on the acceptance/rejection decisions of the target model, so it learns which tokens the target is likely to accept.
-
-The drafter is quantized to INT8 for inference, achieving 500+ tokens/second on a single GPU.
-
-### 11.3 Planner Model Fine-Tuning
-
-The Planner model (14B) is fine-tuned on **action graph generation**:
-
-1. Training data: (task_description, repository_metadata, optimal_action_graph) tuples.
-2. The optimal action graph is derived from successful agent runs by backward induction: which actions were actually necessary, which were speculative and discarded, which ordering minimized turns.
-3. The Planner also learns **token budget allocation**: given a task complexity score and repository size, how to allocate tokens across Planner/Editor/Executor/Reviewer phases.
-
----
-
-## 12. Token Economics and Measurement Framework
-
-### 12.1 Comprehensive Token Accounting
+### 10.1 Comprehensive Token Accounting
 
 The system maintains **per-task token accounting** across all dimensions:
 
@@ -524,10 +436,6 @@ class TokenLedger:
         return sum(p.output_tokens for p in self.phases)
     
     @property
-    def cache_hit_rate(self) -> float:
-        return sum(p.cache_hits for p in self.phases) / sum(p.cache_attempts for p in self.phases)
-    
-    @property
     def tool_overhead(self) -> int:
         return sum(p.tool_result_tokens for p in self.phases)
 
@@ -535,17 +443,12 @@ class PhaseLedger:
     agent: str  # planner, editor, executor, reviewer
     input_tokens: int
     output_tokens: int
-    cache_hits: int
-    cache_attempts: int
     tool_calls: int
     tool_result_tokens: int
     generation_time_ms: int
-    speculative_acceptance_rate: Optional[float]
 ```
 
-### 12.2 Optimization Impact Summary
-
-![Token Economics](token_economics.png)
+### 10.2 Optimization Impact Summary
 
 The cumulative impact of all optimizations, from a naive baseline of 10,000 tokens per average task:
 
@@ -555,26 +458,24 @@ The cumulative impact of all optimizations, from a naive baseline of 10,000 toke
 | + Hash-anchored edits | 6,500 | **35.0%** | Critical — implement first |
 | + CodeGraph lazy context | 4,200 | **58.0%** | Critical — implement second |
 | + Prompt compression | 3,100 | **69.0%** | High |
-| + Prefix caching | 2,400 | **76.0%** | High |
-| + Multi-agent specialization | 1,800 | **82.0%** | High |
-| + Speculative decoding | 1,500 | **85.0%** | Medium (inference layer) |
-| + Tool batching + compression | 1,200 | **88.0%** | High |
-| + Action graph (non-linear loop) | 950 | **90.5%** | Medium |
+| + Multi-agent specialization | 2,200 | **78.0%** | High |
+| + Tool batching + compression | 1,700 | **83.0%** | High |
+| + Action graph (non-linear loop) | 1,400 | **86.0%** | Medium |
 
-### 12.3 Per-Dimension Optimization Targets
+### 10.3 Per-Dimension Optimization Targets
 
 | Dimension | Baseline | Optimized | Reduction | Primary Strategies |
 |---|---|---|---|---|
-| **Input context tokens** | 6,500 | 520 | **92%** | CodeGraph, lazy loading, hybrid retrieval, prompt compression, prefix caching |
+| **Input context tokens** | 6,500 | 780 | **88%** | CodeGraph, lazy loading, hybrid retrieval, prompt compression |
 | **Output generation tokens** | 2,800 | 280 | **90%** | Hash-anchored edits, speculative generation, structured output |
 | **Tool overhead tokens** | 700 | 150 | **79%** | Batching, parallel execution, result summarization, compression |
-| **Total per-task tokens** | 10,000 | 950 | **90.5%** | All layers combined |
+| **Total per-task tokens** | 10,000 | 1,400 | **86.0%** | All layers combined |
 
 ---
 
-## 13. Implementation Roadmap
+## 11. Implementation Roadmap
 
-### 13.1 Phase 1: Foundation (Weeks 1–3)
+### 11.1 Phase 1: Foundation (Weeks 1–3)
 
 Build the core infrastructure: blob store, tree-sitter AST parser, hash-anchored diff format, and basic Editor agent. This phase delivers the two highest-ROI optimizations: hash-anchored edits and content-addressed storage.
 
@@ -585,7 +486,7 @@ Build the core infrastructure: blob store, tree-sitter AST parser, hash-anchored
 | Hash-anchored diff format | Spec + parser + applicator | **−93% output tokens for edits** |
 | Basic Editor agent | Single-model diff generation | Demonstrates end-to-end edit flow |
 
-### 13.2 Phase 2: Context Intelligence (Weeks 4–6)
+### 11.2 Phase 2: Context Intelligence (Weeks 4–6)
 
 Build the CodeGraph, hybrid retrieval system, and Context Assembler. This phase delivers the second-highest ROI: precision context loading.
 
@@ -596,7 +497,7 @@ Build the CodeGraph, hybrid retrieval system, and Context Assembler. This phase 
 | Context Assembler | Lazy loading + incremental updates | Enables precise context injection |
 | Repo-map generator | File-level overview with pageRank | Replaces full-file loading for overview |
 
-### 13.3 Phase 3: Multi-Agent Orchestration (Weeks 7–9)
+### 11.3 Phase 3: Multi-Agent Orchestration (Weeks 7–9)
 
 Split the monolithic agent into Planner, Editor, Executor, and Reviewer. Implement the Orchestrator, action graph, and agent dispatch.
 
@@ -607,51 +508,38 @@ Split the monolithic agent into Planner, Editor, Executor, and Reviewer. Impleme
 | Reviewer agent (7B model) | Semantic validation + rollback | Prevents token-wasting retry loops |
 | Action graph executor | DAG-based parallel execution | **−35% turns per task** |
 
-### 13.4 Phase 4: Inference Optimization (Weeks 10–12)
+### 11.4 Phase 4: Polish and Metrics (Weeks 10–12)
 
-Implement speculative decoding, prefix caching, KV cache quantization, and continuous batching. These are inference-layer optimizations that improve speed and reduce memory pressure.
-
-| Component | Deliverable | Impact |
-|---|---|---|
-| Speculative decoding (1B drafter) | Draft model + verification logic | **2.6x inference speedup** |
-| Prefix caching (exact + fuzzy) | KV cache registry + matching | **−60% input on cache hits** |
-| KV cache quantization (4-bit) | Quantized KV storage | 4x memory reduction |
-| Continuous batching | In-flight request scheduling | 30% throughput improvement |
-
-### 13.5 Phase 5: Polish and Fine-Tuning (Weeks 13–16)
-
-Implement prompt compression, fine-tune all models on agent-collected data, and build the measurement framework.
+Implement prompt compression, build the measurement framework, and add integration tests across all agents.
 
 | Component | Deliverable | Impact |
 |---|---|---|
 | LLMLingua-2 prompt compression | Code-aware token pruning | **−25% input tokens** |
-| Editor fine-tuning (diff format) | Fine-tuned 32B model | 60% reduction in format errors |
-| Drafter distillation | 1B distilled model | 70% speculative acceptance rate |
-| Token measurement dashboard | Real-time token accounting | Optimization visibility |
+| Token measurement dashboard | Real-time token accounting per agent | Optimization visibility |
+| End-to-end integration tests | Full multi-agent task pipeline | Quality assurance |
+| Benchmark suite (SWE-bench Lite, HumanEval) | Automated evaluation against baselines | Success tracking |
 
 ---
 
-## 14. Risk Assessment and Mitigation
+## 12. Risk Assessment and Mitigation
 
 | Risk | Likelihood | Impact | Mitigation |
 |---|---|---|---|
 | Hash collision in anchor matching | Low | High (wrong edit location) | Expand context window progressively; fall back to full file rewrite on ambiguity |
 | CodeGraph outdated (stale AST) | Medium | Medium (missed dependencies) | Incremental updates on file change; full rebuild on branch switch |
-| Speculative drafter low acceptance | Medium | Low (falls back to baseline) | Dynamic K adjustment; train drafter on target model's distribution |
 | Prompt compression loses critical info | Low | High (model makes wrong edit) | Compress only non-critical regions (comments, whitespace); never compress type annotations or logic |
 | Multi-agent communication overhead | Medium | Medium (latency increase) | Shared state via content-addressed store; minimize inter-agent message size |
-| Cache invalidation bugs | Medium | High (stale context) | Hash-based invalidation (automatic on content change); TTL fallback |
 
 ---
 
-## 15. Evaluation Benchmarks
+## 13. Evaluation Benchmarks
 
 The system is evaluated on **three dimensions**: token efficiency, task success rate, and latency.
 
 | Benchmark | Metric | Target | Baseline (naive agent) |
 |---|---|---|---|
 | **SWE-bench Lite** | Pass@1 | 35% | 25% |
-| | Avg tokens per task | 950 | 10,000 |
+| | Avg tokens per task | 1,400 | 10,000 |
 | | Avg turns per task | 4.2 | 12 |
 | **HumanEval** | Pass@1 | 92% | 90% |
 | | Avg tokens per task | 180 | 800 |

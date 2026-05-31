@@ -97,8 +97,7 @@ cargo clippy -- -D warnings
 | 1 | Foundation: blob store, diff format/parser/applicator, AST parser, Editor agent | **✅ Done** |
 | 2 | Context Intelligence: CodeGraph with pageRank, hybrid retrieval | Planned |
 | 3 | Multi-Agent Orchestration: Planner, Executor, Reviewer agents | Planned |
-| 4 | Inference Optimization: speculative decoding, prefix caching, KV quantization | Planned |
-| 5 | Polish & Fine-Tuning: prompt compression, model fine-tuning, metrics dashboard | Planned |
+| 4 | Polish and Metrics: prompt compression, token accounting dashboard, benchmarks | Planned |
 
 ## License
 
