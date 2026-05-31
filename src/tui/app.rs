@@ -5,6 +5,22 @@ use ratatui::layout::Rect;
 use crate::agent::orchestrator::{Orchestrator, OrchestratorState};
 use crate::codegraph::graph::CodeGraph;
 
+/// Which text area a selection belongs to.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SelectionSource {
+    TaskInput,
+    Result,
+    FileContent,
+}
+
+/// A text selection (byte range inside a specific text area).
+#[derive(Debug, Clone)]
+pub struct TextSelection {
+    pub source: SelectionSource,
+    pub start: usize,
+    pub end: usize,
+}
+
 /// Which screen is currently visible.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Screen {
@@ -111,6 +127,13 @@ pub struct App {
     pub sidebar_hover: Option<usize>,
     pub file_hover: Option<usize>,
     pub animation_speed: AnimationSpeed,
+    // ── Text selection ──
+    pub selection: Option<TextSelection>,
+    pub copy_flash_ticks: u8,
+    pub result_rect: Option<Rect>,
+    pub file_content_rect: Option<Rect>,
+    pub result_scroll: usize,
+    pub file_content_scroll: usize,
     pub mouse_enabled: bool,
     pub log_filter: LogFilter,
     pub theme: Theme,
@@ -186,6 +209,12 @@ impl App {
             sidebar_hover: None,
             file_hover: None,
             animation_speed: AnimationSpeed::Normal,
+            selection: None,
+            copy_flash_ticks: 0,
+            result_rect: None,
+            file_content_rect: None,
+            result_scroll: 0,
+            file_content_scroll: 0,
             mouse_enabled: true,
             log_filter: LogFilter::All,
             theme: Theme::Sage,

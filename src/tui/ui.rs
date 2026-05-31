@@ -4,12 +4,12 @@ use ratatui::{
     text::{Line, Span, Text},
     widgets::{
         Block, Borders, List, ListItem, Paragraph, Scrollbar, ScrollbarOrientation,
-        ScrollbarState, Wrap,
+        ScrollbarState,
     },
     Frame,
 };
 
-use super::app::{App, LogLevel, Screen, StatusKind};
+use super::app::{App, LogLevel, Screen, SelectionSource, StatusKind};
 use super::events::{byte_index_to_visual_pos, wrap_text};
 use super::file_tree::build_visible_tree;
 use crate::agent::orchestrator::OrchestratorState;
@@ -31,6 +31,8 @@ const SUCCESS: Color = Color::Rgb(140, 200, 140);
 const INFO: Color = Color::Rgb(130, 170, 210);
 const BORDER: Color = Color::Rgb(60, 60, 70);
 const BORDER_ACTIVE: Color = Color::Rgb(156, 175, 136);
+const SELECT_BG: Color = Color::Rgb(55, 55, 75);
+const SELECT_FLASH_BG: Color = Color::Rgb(80, 80, 110);
 
 // ── Top-level render ──
 
@@ -329,13 +331,19 @@ fn render_task(frame: &mut Frame, app: &mut App, area: Rect) {
     let total_lines = wrapped.len().max(1);
     app.task_scroll = app.task_scroll.min(total_lines.saturating_sub(visible_height));
 
-    // Build visible lines.
-    let mut visible_lines: Vec<Line> = wrapped
-        .iter()
-        .skip(app.task_scroll)
-        .take(visible_height)
-        .map(|(s, e)| Line::from(Span::styled(&app.task_input[*s..*e], Style::default().fg(TEXT))))
-        .collect();
+    // Build visible lines with selection highlight.
+    let sel = app.selection.as_ref().filter(|s| s.source == SelectionSource::TaskInput).map(|s| (s.start, s.end));
+    let flash = app.copy_flash_ticks > 0;
+    let select_bg = if flash { SELECT_FLASH_BG } else { SELECT_BG };
+    let mut visible_lines = lines_with_selection(
+        &app.task_input,
+        width,
+        app.task_scroll,
+        visible_height,
+        sel,
+        Style::default().fg(TEXT),
+        select_bg,
+    );
 
     // Placeholder when empty and not focused.
     if app.task_input.is_empty() && !app.task_input_focused && app.task_scroll == 0 {
@@ -387,16 +395,44 @@ fn render_task(frame: &mut Frame, app: &mut App, area: Rect) {
     frame.render_widget(Paragraph::new(action_text).alignment(Alignment::Center), chunks[2]);
 
     // Result area.
+    let result_block = Block::default()
+        .title(" Result ")
+        .title_style(Style::default().fg(ACCENT))
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(BORDER));
+    let result_inner = chunks[3].inner(Margin::new(1, 1));
+    app.result_rect = Some(result_inner);
+
     if let Some(result) = &app.last_result {
-        let result_block = Block::default()
-            .title(" Result ")
-            .title_style(Style::default().fg(ACCENT))
-            .borders(Borders::ALL)
-            .border_style(Style::default().fg(BORDER));
-        let result_text = Paragraph::new(result.clone())
-            .block(result_block)
-            .wrap(Wrap::default());
+        let result_width = result_inner.width;
+        let result_visible_height = result_inner.height as usize;
+        let total_lines = wrap_text(result, result_width).len();
+        app.result_scroll = app.result_scroll.min(total_lines.saturating_sub(result_visible_height));
+
+        let sel = app.selection.as_ref().filter(|s| s.source == SelectionSource::Result).map(|s| (s.start, s.end));
+        let flash = app.copy_flash_ticks > 0;
+        let select_bg = if flash { SELECT_FLASH_BG } else { SELECT_BG };
+        let result_lines = lines_with_selection(
+            result,
+            result_width,
+            app.result_scroll,
+            result_visible_height,
+            sel,
+            Style::default().fg(TEXT),
+            select_bg,
+        );
+        let result_text = Paragraph::new(Text::from(result_lines)).block(result_block);
         frame.render_widget(result_text, chunks[3]);
+
+        if total_lines > result_visible_height {
+            let mut state = ScrollbarState::new(total_lines).position(app.result_scroll);
+            let sb = Scrollbar::default()
+                .orientation(ScrollbarOrientation::VerticalRight)
+                .style(Style::default().fg(TEXT_MUTED));
+            frame.render_stateful_widget(sb, chunks[3], &mut state);
+        }
+    } else {
+        frame.render_widget(result_block, chunks[3]);
     }
 }
 
@@ -501,38 +537,149 @@ fn render_files(frame: &mut Frame, app: &mut App, area: Rect) {
         .borders(Borders::ALL)
         .border_style(Style::default().fg(BORDER));
     let content_inner = chunks[1].inner(Margin::new(1, 1));
+    app.file_content_rect = Some(content_inner);
     frame.render_widget(content_block, chunks[1]);
 
-    let content_text = app
-        .selected_file
-        .as_ref()
-        .and_then(|f| app.orchestrator.file_contents.get(f))
-        .map(|c| syntax_highlight(c))
-        .unwrap_or_else(|| Text::from("Select a file to view its contents."));
+    let content_text = if let Some(content) = app.selected_file.as_ref().and_then(|f| app.orchestrator.file_contents.get(f)) {
+        let visible_height = content_inner.height as usize;
+        let total_lines = wrap_text(content, content_inner.width).len();
+        app.file_content_scroll = app.file_content_scroll.min(total_lines.saturating_sub(visible_height));
+
+        let sel = app.selection.as_ref().filter(|s| s.source == SelectionSource::FileContent).map(|s| (s.start, s.end));
+        let flash = app.copy_flash_ticks > 0;
+        let select_bg = if flash { SELECT_FLASH_BG } else { SELECT_BG };
+        let lines = render_file_content_with_selection(
+            content,
+            content_inner.width,
+            app.file_content_scroll,
+            visible_height,
+            sel,
+            select_bg,
+        );
+        Text::from(lines)
+    } else {
+        Text::from("Select a file to view its contents.")
+    };
 
     frame.render_widget(Paragraph::new(content_text), content_inner);
+
+    if let Some(content) = app.selected_file.as_ref().and_then(|f| app.orchestrator.file_contents.get(f)) {
+        let total_lines = wrap_text(content, content_inner.width).len();
+        let visible_height = content_inner.height as usize;
+        if total_lines > visible_height {
+            let mut state = ScrollbarState::new(total_lines).position(app.file_content_scroll);
+            let sb = Scrollbar::default()
+                .orientation(ScrollbarOrientation::VerticalRight)
+                .style(Style::default().fg(TEXT_MUTED));
+            frame.render_stateful_widget(sb, chunks[1], &mut state);
+        }
+    }
 }
 
-fn syntax_highlight(content: &str) -> Text<'_> {
-    let mut lines: Vec<Line> = Vec::new();
-    for line in content.lines() {
-        let trimmed = line.trim_start();
-        let style = if trimmed.starts_with("fn ") || trimmed.starts_with("pub fn ") {
-            Style::default().fg(Color::Rgb(140, 200, 220)) // cyan-ish for functions
+/// Wrap plain text and apply a selection highlight to overlapping portions.
+fn lines_with_selection<'a>(
+    text: &'a str,
+    width: u16,
+    scroll: usize,
+    visible_height: usize,
+    selection: Option<(usize, usize)>,
+    base_style: Style,
+    select_bg: Color,
+) -> Vec<Line<'a>> {
+    let sel = selection.map(|(s, e)| (s.min(e), s.max(e)));
+    let wrapped = wrap_text(text, width);
+    let mut lines = Vec::new();
+
+    for (start, end) in wrapped.iter().skip(scroll).take(visible_height) {
+        let line_text = &text[*start..*end];            if let Some((sel_start, sel_end)) = sel && sel_start < *end && sel_end > *start {
+                let sel_start_in_line = sel_start.saturating_sub(*start).min(line_text.len());
+                let sel_end_in_line = sel_end.min(*end).saturating_sub(*start).min(line_text.len());
+                let mut spans = Vec::new();
+                if sel_start_in_line > 0 {
+                    spans.push(Span::styled(&line_text[..sel_start_in_line], base_style));
+                }
+                if sel_end_in_line > sel_start_in_line {
+                    let sel_style = base_style.bg(select_bg);
+                    spans.push(Span::styled(
+                        &line_text[sel_start_in_line..sel_end_in_line],
+                        sel_style,
+                    ));
+                }
+                if sel_end_in_line < line_text.len() {
+                    spans.push(Span::styled(&line_text[sel_end_in_line..], base_style));
+                }
+                lines.push(Line::from(spans));
+                continue;
+            }
+        lines.push(Line::from(Span::styled(line_text, base_style)));
+    }
+    lines
+}
+
+/// Render syntax-highlighted file content with an optional selection overlay.
+fn render_file_content_with_selection<'a>(
+    content: &'a str,
+    width: u16,
+    scroll: usize,
+    visible_height: usize,
+    selection: Option<(usize, usize)>,
+    select_bg: Color,
+) -> Vec<Line<'a>> {
+    let sel = selection.map(|(s, e)| (s.min(e), s.max(e)));
+    let mut result = Vec::new();
+    let mut byte_offset = 0usize;
+
+    for original_line in content.split('\n') {
+        let line_len = original_line.len();
+
+        let trimmed = original_line.trim_start();
+        let base_style = if trimmed.starts_with("fn ") || trimmed.starts_with("pub fn ") {
+            Style::default().fg(Color::Rgb(140, 200, 220))
         } else if trimmed.starts_with("struct ") || trimmed.starts_with("pub struct ") {
-            Style::default().fg(Color::Rgb(220, 180, 140)) // warm for structs
+            Style::default().fg(Color::Rgb(220, 180, 140))
         } else if trimmed.starts_with("use ") || trimmed.starts_with("mod ") {
-            Style::default().fg(Color::Rgb(180, 160, 220)) // purple for imports
+            Style::default().fg(Color::Rgb(180, 160, 220))
         } else if trimmed.starts_with("//") || trimmed.starts_with("///") || trimmed.starts_with("*") {
             Style::default().fg(TEXT_MUTED)
         } else if trimmed.starts_with("impl ") || trimmed.starts_with("trait ") {
-            Style::default().fg(Color::Rgb(220, 200, 140)) // yellow for impls
+            Style::default().fg(Color::Rgb(220, 200, 140))
         } else {
             Style::default().fg(TEXT)
         };
-        lines.push(Line::from(Span::styled(line, style)));
+
+        let wrapped = wrap_text(original_line, width);
+        for (seg_start, seg_end) in wrapped {
+            let seg_abs_start = byte_offset + seg_start;
+            let seg_abs_end = byte_offset + seg_end;
+            let seg_text = &original_line[seg_start..seg_end];
+
+            if let Some((sel_start, sel_end)) = sel && sel_start < seg_abs_end && sel_end > seg_abs_start {
+                let sel_start_in_seg = sel_start.saturating_sub(seg_abs_start).min(seg_text.len());
+                let sel_end_in_seg = sel_end.min(seg_abs_end).saturating_sub(seg_abs_start).min(seg_text.len());
+                let mut spans = Vec::new();
+                if sel_start_in_seg > 0 {
+                    spans.push(Span::styled(&seg_text[..sel_start_in_seg], base_style));
+                }
+                if sel_end_in_seg > sel_start_in_seg {
+                    let sel_style = base_style.bg(select_bg);
+                    spans.push(Span::styled(
+                        &seg_text[sel_start_in_seg..sel_end_in_seg],
+                        sel_style,
+                    ));
+                }
+                if sel_end_in_seg < seg_text.len() {
+                    spans.push(Span::styled(&seg_text[sel_end_in_seg..], base_style));
+                }
+                result.push(Line::from(spans));
+                continue;
+            }
+            result.push(Line::from(Span::styled(seg_text, base_style)));
+        }
+
+        byte_offset += line_len + 1; // +1 for \n
     }
-    Text::from(lines)
+
+    result.into_iter().skip(scroll).take(visible_height).collect()
 }
 
 // ── Logs Screen ──

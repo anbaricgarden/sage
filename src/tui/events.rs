@@ -1,6 +1,8 @@
+use std::io::{self, Write};
+
 use crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers, MouseEventKind};
 
-use super::app::{App, Screen};
+use super::app::{App, Screen, SelectionSource, TextSelection};
 use super::file_tree::build_visible_tree;
 
 // ── Text wrapping & cursor utilities ──
@@ -87,6 +89,22 @@ fn auto_scroll(app: &mut App, width: u16) {
     }
 }
 
+/// Write the given text to the system clipboard via the OSC 52 escape sequence.
+fn copy_to_clipboard(text: &str) {
+    use base64::{Engine as _, engine::general_purpose};
+    let encoded = general_purpose::STANDARD.encode(text);
+    let seq = format!("\x1b]52;c;{}\x07", encoded);
+    let _ = io::stdout().write_all(seq.as_bytes());
+    let _ = io::stdout().flush();
+}
+
+/// Compute the byte index inside `text` from a mouse click within `rect`.
+fn byte_index_at_click(text: &str, rect: ratatui::layout::Rect, scroll: usize, col: u16, row: u16) -> usize {
+    let click_row = (row as usize).saturating_sub(rect.y as usize) + scroll;
+    let click_col = col.saturating_sub(rect.x) as usize;
+    visual_pos_to_byte_index(text, click_row, click_col, rect.width)
+}
+
 /// Poll for an event and update the app state.
 /// Returns true if the app should continue running.
 pub fn handle_event(app: &mut App) -> std::io::Result<bool> {
@@ -158,6 +176,13 @@ fn handle_key(app: &mut App, code: KeyCode, modifiers: KeyModifiers) -> bool {
 fn handle_task_keys(app: &mut App, code: KeyCode, modifiers: KeyModifiers) {
     if app.running {
         return; // Block input while running.
+    }
+
+    // Dismiss active selection on any edit/navigation key (Esc and Enter already clear it).
+    let is_submit_enter = code == KeyCode::Enter && !modifiers.contains(KeyModifiers::SHIFT);
+    if !matches!(code, KeyCode::Esc) && !is_submit_enter {
+        app.selection = None;
+        app.copy_flash_ticks = 0;
     }
 
     let ctrl = modifiers.contains(KeyModifiers::CONTROL);
@@ -281,9 +306,22 @@ fn handle_task_keys(app: &mut App, code: KeyCode, modifiers: KeyModifiers) {
             app.task_input.clear();
             app.task_cursor = 0;
             app.task_scroll = 0;
+            app.selection = None;
+            app.copy_flash_ticks = 0;
+        }
+        KeyCode::PageUp => {
+            app.result_scroll = app.result_scroll.saturating_sub(10);
+        }
+        KeyCode::PageDown => {
+            if let Some(result) = &app.last_result {
+                let total = wrap_text(result, app.result_rect.map(|r| r.width).unwrap_or(40)).len();
+                app.result_scroll = (app.result_scroll + 10).min(total.saturating_sub(1));
+            }
         }
         KeyCode::Esc => {
             app.task_input_focused = false;
+            app.selection = None;
+            app.copy_flash_ticks = 0;
         }
         _ => {}
     }
@@ -413,6 +451,25 @@ fn handle_file_keys(app: &mut App, code: KeyCode) {
         return;
     }
 
+    match code {
+        KeyCode::PageUp => {
+            app.file_content_scroll = app.file_content_scroll.saturating_sub(10);
+            app.selection = None;
+            app.copy_flash_ticks = 0;
+            return;
+        }
+        KeyCode::PageDown => {
+            if let Some(content) = app.selected_file.as_ref().and_then(|f| app.orchestrator.file_contents.get(f)) {
+                let total = wrap_text(content, app.file_content_rect.map(|r| r.width).unwrap_or(40)).len();
+                app.file_content_scroll = (app.file_content_scroll + 10).min(total.saturating_sub(1));
+            }
+            app.selection = None;
+            app.copy_flash_ticks = 0;
+            return;
+        }
+        _ => {}
+    }
+
     let paths: Vec<String> = app.orchestrator.file_contents.keys().cloned().collect();
     let visible = build_visible_tree(&paths, &app.expanded_dirs, &app.file_filter);
     if visible.is_empty() {
@@ -493,6 +550,8 @@ fn handle_file_filter_keys(app: &mut App, code: KeyCode) {
             app.file_filter_focused = false;
             app.file_filter.clear();
             app.file_filter_cursor = 0;
+            app.selection = None;
+            app.copy_flash_ticks = 0;
         }
         KeyCode::Enter => {
             app.file_filter_focused = false;
@@ -516,14 +575,58 @@ fn contains(rect: ratatui::layout::Rect, col: u16, row: u16) -> bool {
 }
 
 fn handle_mouse(app: &mut App, kind: MouseEventKind, col: u16, row: u16) {
+    let in_sidebar = app.sidebar_rect.is_some_and(|r| contains(r, col, row));
+    let in_file_tree = app.file_tree_rect.is_some_and(|r| contains(r, col, row));
+    let in_task_input = app.task_input_rect.is_some_and(|r| contains(r, col, row));
+    let in_settings = app.settings_rect.is_some_and(|r| contains(r, col, row));
+    let in_result = app.result_rect.is_some_and(|r| contains(r, col, row));
+    let in_file_content = app.file_content_rect.is_some_and(|r| contains(r, col, row));
+
     match kind {
         MouseEventKind::Down(_) => {
-            let in_sidebar = app.sidebar_rect.is_some_and(|r| contains(r, col, row));
-            let in_file_tree = app.file_tree_rect.is_some_and(|r| contains(r, col, row));
-            let in_task_input = app.task_input_rect.is_some_and(|r| contains(r, col, row));
-            let in_settings = app.settings_rect.is_some_and(|r| contains(r, col, row));
+            // Start a new selection if clicking inside a text area.
+            if app.screen == Screen::Task && in_task_input {
+                let rect = app.task_input_rect.unwrap();
+                let idx = byte_index_at_click(&app.task_input, rect, app.task_scroll, col, row);
+                app.selection = Some(TextSelection {
+                    source: SelectionSource::TaskInput,
+                    start: idx,
+                    end: idx,
+                });
+                app.task_cursor = idx;
+                app.task_input_focused = true;
+                app.copy_flash_ticks = 0;
+            } else if app.screen == Screen::Task && in_result {
+                if let Some(result) = &app.last_result {
+                    let rect = app.result_rect.unwrap();
+                    let idx = byte_index_at_click(result, rect, app.result_scroll, col, row);
+                    app.selection = Some(TextSelection {
+                        source: SelectionSource::Result,
+                        start: idx,
+                        end: idx,
+                    });
+                    app.copy_flash_ticks = 0;
+                }
+            } else if app.screen == Screen::Files && in_file_content {
+                if let Some(content) = app.selected_file.as_ref().and_then(|f| app.orchestrator.file_contents.get(f)) {
+                    let rect = app.file_content_rect.unwrap();
+                    let idx = byte_index_at_click(content, rect, app.file_content_scroll, col, row);
+                    app.selection = Some(TextSelection {
+                        source: SelectionSource::FileContent,
+                        start: idx,
+                        end: idx,
+                    });
+                    app.copy_flash_ticks = 0;
+                }
+            } else {
+                // Click outside any text area: clear selection.
+                app.selection = None;
+                app.copy_flash_ticks = 0;
+            }
 
+            // Existing click handlers (sidebar, file tree, settings, filter, task input cursor).
             if in_sidebar {
+
                 let rect = app.sidebar_rect.unwrap();
                 let idx = (row as usize).saturating_sub(rect.y as usize);
                 let screens = Screen::all();
@@ -553,7 +656,9 @@ fn handle_mouse(app: &mut App, kind: MouseEventKind, col: u16, row: u16) {
                 let rect = app.file_filter_rect.unwrap();
                 let click_col = col.saturating_sub(rect.x) as usize;
                 app.file_filter_cursor = click_col.min(app.file_filter.len());
-            } else if app.screen == Screen::Task && in_task_input {
+            } else if app.screen == Screen::Task && in_task_input && app.selection.is_none() {
+                // Only place cursor if we didn't start a selection (selection start
+                // is handled above before this branch).
                 let rect = app.task_input_rect.unwrap();
                 app.task_input_focused = true;
                 let click_row = (row as usize)
@@ -576,6 +681,65 @@ fn handle_mouse(app: &mut App, kind: MouseEventKind, col: u16, row: u16) {
                         3 => app.toggle_theme(),
                         _ => {}
                     }
+                }
+            }
+        }
+        MouseEventKind::Drag(_) => {
+            if let Some(sel) = &mut app.selection {
+                let (text, rect, scroll): (&str, _, _) = match sel.source {
+                    SelectionSource::TaskInput => (
+                        &app.task_input,
+                        app.task_input_rect.unwrap(),
+                        app.task_scroll,
+                    ),
+                    SelectionSource::Result => {
+                        if let Some(result) = &app.last_result {
+                            (result.as_str(), app.result_rect.unwrap(), app.result_scroll)
+                        } else {
+                            return;
+                        }
+                    }
+                    SelectionSource::FileContent => {
+                        if let Some(content) = app.selected_file.as_ref().and_then(|f| app.orchestrator.file_contents.get(f)) {
+                            (content.as_str(), app.file_content_rect.unwrap(), app.file_content_scroll)
+                        } else {
+                            return;
+                        }
+                    }
+                };
+                let idx = byte_index_at_click(text, rect, scroll, col, row);
+                sel.end = idx;
+            }
+        }
+        MouseEventKind::Up(_) => {
+            if let Some(sel) = app.selection.take() {
+                let (start, end) = if sel.start < sel.end {
+                    (sel.start, sel.end)
+                } else {
+                    (sel.end, sel.start)
+                };
+                if end > start {
+                    let text = match sel.source {
+                        SelectionSource::TaskInput => app.task_input[start..end].to_string(),
+                        SelectionSource::Result => {
+                            app.last_result.as_ref().map(|r| r[start..end].to_string()).unwrap_or_default()
+                        }
+                        SelectionSource::FileContent => {
+                            app.selected_file.as_ref()
+                                .and_then(|f| app.orchestrator.file_contents.get(f))
+                                .map(|c| c[start..end].to_string())
+                                .unwrap_or_default()
+                        }
+                    };
+                    copy_to_clipboard(&text);
+                    app.set_status("Copied to clipboard!", crate::tui::app::StatusKind::Success);
+                    // Keep selection visible for the flash duration.
+                    app.selection = Some(TextSelection {
+                        source: sel.source,
+                        start,
+                        end,
+                    });
+                    app.copy_flash_ticks = 5;
                 }
             }
         }
@@ -616,7 +780,7 @@ fn handle_mouse(app: &mut App, kind: MouseEventKind, col: u16, row: u16) {
         MouseEventKind::ScrollUp => {
             if app.screen == Screen::Logs {
                 app.log_scroll = app.log_scroll.saturating_sub(3);
-            } else if app.screen == Screen::Files {
+            } else if app.screen == Screen::Files && in_file_tree {
                 let paths: Vec<String> = app.orchestrator.file_contents.keys().cloned().collect();
                 let visible = build_visible_tree(&paths, &app.expanded_dirs, &app.file_filter);
                 if !visible.is_empty() && app.file_scroll > 0 {
@@ -625,12 +789,16 @@ fn handle_mouse(app: &mut App, kind: MouseEventKind, col: u16, row: u16) {
                         app.selected_file = Some(entry.path.clone());
                     }
                 }
+            } else if app.screen == Screen::Files && in_file_content {
+                app.file_content_scroll = app.file_content_scroll.saturating_sub(3);
+            } else if app.screen == Screen::Task && in_result {
+                app.result_scroll = app.result_scroll.saturating_sub(3);
             }
         }
         MouseEventKind::ScrollDown => {
             if app.screen == Screen::Logs {
                 app.log_scroll = (app.log_scroll + 3).min(app.logs.len().saturating_sub(1));
-            } else if app.screen == Screen::Files {
+            } else if app.screen == Screen::Files && in_file_tree {
                 let paths: Vec<String> = app.orchestrator.file_contents.keys().cloned().collect();
                 let visible = build_visible_tree(&paths, &app.expanded_dirs, &app.file_filter);
                 if app.file_scroll + 1 < visible.len() {
@@ -639,6 +807,12 @@ fn handle_mouse(app: &mut App, kind: MouseEventKind, col: u16, row: u16) {
                         app.selected_file = Some(entry.path.clone());
                     }
                 }
+            } else if app.screen == Screen::Files && in_file_content && let Some(content) = app.selected_file.as_ref().and_then(|f| app.orchestrator.file_contents.get(f)) {
+                let total = wrap_text(content, app.file_content_rect.map(|r| r.width).unwrap_or(40)).len();
+                app.file_content_scroll = (app.file_content_scroll + 3).min(total.saturating_sub(1));
+            } else if app.screen == Screen::Task && in_result && let Some(result) = &app.last_result {
+                let total = wrap_text(result, app.result_rect.map(|r| r.width).unwrap_or(40)).len();
+                app.result_scroll = (app.result_scroll + 3).min(total.saturating_sub(1));
             }
         }
         _ => {}

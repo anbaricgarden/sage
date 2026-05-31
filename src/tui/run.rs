@@ -85,6 +85,12 @@ fn run_loop(
         // Tick animation.
         if last_tick.elapsed() >= tick_rate {
             app.tick_spinner();
+            if app.copy_flash_ticks > 0 {
+                app.copy_flash_ticks -= 1;
+                if app.copy_flash_ticks == 0 {
+                    app.selection = None;
+                }
+            }
             last_tick = std::time::Instant::now();
         }
     }
