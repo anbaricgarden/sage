@@ -187,7 +187,7 @@ pub enum LogFilter {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Theme {
     Sage,
-    Dark,
+    // Dark,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
