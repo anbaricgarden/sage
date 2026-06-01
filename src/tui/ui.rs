@@ -9,7 +9,7 @@ use ratatui::{
     Frame,
 };
 
-use super::app::{App, LogLevel, Screen, SelectionSource, StatusKind};
+use super::app::{App, LogLevel, ProviderType, Screen, SelectionSource, StatusKind};
 use super::events::{byte_index_to_visual_pos, wrap_text};
 use super::file_tree::build_visible_tree;
 use crate::agent::orchestrator::OrchestratorState;
@@ -70,6 +70,7 @@ pub fn render(frame: &mut Frame, app: &mut App) {
         Screen::Logs => render_logs(frame, app, inner),
         Screen::Graph => render_graph(frame, app, inner),
         Screen::Settings => render_settings(frame, app, inner),
+        Screen::Providers => render_providers(frame, app, inner),
     }
 
     render_status_bar(frame, app, status_area);
@@ -853,10 +854,7 @@ fn render_settings(frame: &mut Frame, app: &mut App, area: Rect) {
         .borders(Borders::ALL)
         .border_style(Style::default().fg(BORDER));
     let inner = area.inner(Margin::new(1, 1));
-    frame.render_widget(block, area);
-
-    // ── Settings rows: 0-4 are general, 5-9 are LLM provider ──
-    let settings: Vec<(&str, String)> = vec![
+    frame.render_widget(block, area);    let settings: Vec<(&str, String)> = vec![
         ("Animation Speed", format!("{:?}", app.animation_speed)),
         (
             "Mouse Support",
@@ -865,44 +863,15 @@ fn render_settings(frame: &mut Frame, app: &mut App, area: Rect) {
         ("Log Filter", format!("{:?}", app.log_filter)),
         ("Theme", format!("{:?}", app.theme)),
         ("Copy Defer", format!("{}00 ms", app.copy_defer_duration)),
-        // ── LLM Provider section (rows 5-9) ──
-        ("Provider", format!("{}", app.llm_provider.provider)),
-        ("Model", format!("{}", app.llm_provider.model)),
-        (
-            "API Key",
-            if app.llm_provider.api_key.is_empty() {
-                "(env or empty)".to_string()
-            } else {
-                "********".to_string()
-            },
-        ),
-        (
-            "Base URL",
-            if app.llm_provider.base_url.is_empty() {
-                "(default)".to_string()
-            } else {
-                app.llm_provider.base_url.clone()
-            },
-        ),
     ];
-    // Model row (index 6) shows ◀/▶ affordance when selected.
-    let model_affordance = if app.settings_cursor == 6 { " ◀/▶" } else { "" };
 
-    // Reserve space for the hint at the bottom.
-    let hint_height = 1;
-    let list_area = Rect::new(
-        inner.x,
-        inner.y,
-        inner.width,
-        inner.height.saturating_sub(hint_height + 1),
-    );
-    app.settings_rect = Some(list_area);    let items: Vec<ListItem> = settings
+    app.settings_rect = Some(inner);
+    let items: Vec<ListItem> = settings
         .iter()
         .enumerate()
         .map(|(i, (label, value))| {
             let is_selected = i == app.settings_cursor;
             let is_hovered = app.settings_hover == Some(i);
-
             let marker = if is_selected { "▸ " } else { "  "};
             let style = if is_selected {
                 Style::default()
@@ -919,52 +888,315 @@ fn render_settings(frame: &mut Frame, app: &mut App, area: Rect) {
             } else {
                 Style::default().fg(ACCENT_DIM)
             };
-            // For the model row, append the ◀/▶ affordance when selected.
-            let value_display = if i == 6 { format!("{}{}", value, model_affordance) } else { value.clone() };
             let content = Line::from(vec![
                 Span::styled(marker, Style::default().fg(ACCENT)),
                 Span::styled(format!("{:20}", label), style),
-                Span::styled(format!("{:30}", value_display), value_style),
+                Span::styled(format!("{:30}", value), value_style),
             ]);
             ListItem::new(content)
         })
         .collect();
 
     let list = List::new(items).block(Block::default());
-    frame.render_widget(list, list_area);
+    frame.render_widget(list, inner);
 
-    // Hint at the bottom — content adapts to the selected row.
-    let hint_spans = {
-        let mut spans = vec![
+    // Hint bar.
+    let hint = Paragraph::new(Line::from(vec![
+        Span::styled("↑↓/j/k ", Style::default().fg(TEXT_MUTED)),
+        Span::styled("Navigate", Style::default().fg(TEXT_SECONDARY)),
+        Span::raw("  |  "),
+        Span::styled("Enter/Space ", Style::default().fg(TEXT_MUTED)),
+        Span::styled("Cycle", Style::default().fg(TEXT_SECONDARY)),
+        Span::raw("  |  "),
+        Span::styled("7 ", Style::default().fg(TEXT_MUTED)),
+        Span::styled("Providers", Style::default().fg(TEXT_SECONDARY)),
+    ]))
+    .alignment(Alignment::Center);
+    frame.render_widget(hint, Rect::new(inner.x, inner.y + inner.height, inner.width, 1));
+}
+
+// ── Providers Screen ──────────────────────────────────────────────────────
+
+fn render_providers(frame: &mut Frame, app: &mut App, area: Rect) {
+    let block = Block::default()
+        .title(" Providers ")
+        .title_style(Style::default().fg(ACCENT).add_modifier(Modifier::BOLD))
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(BORDER));
+    frame.render_widget(block, area);
+    let inner = area.inner(Margin::new(1, 1));
+
+    // Two-panel layout: list (35%) + config (65%).
+    let list_width = (inner.width as f32 * 0.35) as u16;
+    let config_width = inner.width.saturating_sub(list_width + 2);
+    let list_panel = Rect::new(inner.x, inner.y, list_width, inner.height);
+    let config_panel = Rect::new(inner.x + list_width + 2, inner.y, config_width, inner.height);
+
+    app.provider_rect = Some(list_panel);
+    app.provider_config_rect = Some(config_panel);
+
+    render_provider_list(frame, app, list_panel);
+    render_provider_config(frame, app, config_panel);
+}
+
+fn render_provider_list(frame: &mut Frame, app: &mut App, area: Rect) {
+    let n = app.providers.len();
+
+    // Build all list rows.
+    let mut rows: Vec<Line> = Vec::new();
+
+    // Configured providers (0 .. n-1).
+    for (i, provider) in app.providers.iter().enumerate() {
+        let is_selected = app.provider_selected == Some(provider.id);
+        let is_active = app.active_provider == Some(provider.id);
+        let is_hovered = app.provider_list_hover == Some(i);
+        let marker = if is_selected { "▸ " } else { "  "};
+        let active_dot = if is_active { " ●" } else { "  "};
+        let style = if is_selected {
+            Style::default().fg(ACCENT_BRIGHT).bg(SURFACE).add_modifier(Modifier::BOLD)
+        } else if is_hovered {
+            Style::default().fg(TEXT).bg(SURFACE_HOVER)
+        } else {
+            Style::default().fg(TEXT)
+        };
+        let active_style = if is_active {
+            Style::default().fg(SUCCESS)
+        } else {
+            Style::default().fg(TEXT_SECONDARY)
+        };
+        rows.push(Line::from(vec![
+            Span::styled(marker, Style::default().fg(ACCENT)),
+            Span::styled(&provider.name, style),
+            Span::styled(active_dot, active_style),
+        ]));
+    }
+
+    // Separator.
+    if n > 0 {
+        rows.push(Line::from(vec![
+            Span::styled("─── Add Provider ───", Style::default().fg(TEXT_MUTED)),
+        ]));
+    }
+
+    // Add-provider templates (n or 0..n-1 depending on separator).
+    let add_start = if n > 0 { n + 1 } else { n };
+    for (di, pt) in [ProviderType::GenericOpenAI, ProviderType::GenericAnthropic, ProviderType::LMStudio, ProviderType::Ollama, ProviderType::LlamaCpp].iter().enumerate() {
+        let row_idx = add_start + di;
+        let is_selected = app.provider_list_cursor == row_idx && app.provider_creating == Some(*pt);
+        let is_hovered = app.provider_list_hover == Some(row_idx);
+        let marker = if is_selected { "▸ " } else { "  "};
+        let style = if is_selected {
+            Style::default().fg(ACCENT_BRIGHT).bg(SURFACE).add_modifier(Modifier::BOLD)
+        } else if is_hovered {
+            Style::default().fg(TEXT).bg(SURFACE_HOVER)
+        } else {
+            Style::default().fg(TEXT_SECONDARY)
+        };
+        rows.push(Line::from(vec![
+            Span::styled(marker, Style::default().fg(TEXT_MUTED)),
+            Span::styled(format!("[+] {}", pt), style),
+        ]));
+    }
+
+    // Store total list height for cursor clamping.
+    let total_rows = if n > 0 { n + 1 + 5 } else { 5 };
+
+    // Clamp hover.
+    if app.provider_list_hover.is_some_and(|h| h >= total_rows) {
+        app.provider_list_hover = None;
+    }
+
+    // Render the list.
+    let list_block = Block::default().borders(Borders::RIGHT).border_style(Style::default().fg(BORDER));
+    frame.render_widget(list_block, area);
+    let list_inner = area.inner(Margin::new(1, 1));
+
+    let visible = rows
+        .into_iter()
+        .take(list_inner.height as usize)
+        .collect::<Vec<_>>();
+    frame.render_widget(Paragraph::new(visible), list_inner);
+
+    // Bottom hint.
+    let hint = Line::from(vec![
+        Span::styled("↑↓/j/k ", Style::default().fg(TEXT_MUTED)),
+        Span::styled("Navigate", Style::default().fg(TEXT_SECONDARY)),
+        Span::raw("  |  "),
+        Span::styled("Enter ", Style::default().fg(TEXT_MUTED)),
+        Span::styled("Configure", Style::default().fg(TEXT_SECONDARY)),
+        Span::raw("  |  "),
+        Span::styled("d ", Style::default().fg(TEXT_MUTED)),
+        Span::styled("Delete", Style::default().fg(TEXT_SECONDARY)),
+    ]);
+    frame.render_widget(Paragraph::new(hint), Rect::new(list_inner.x, list_inner.y + list_inner.height, list_inner.width, 1));
+}
+
+fn render_provider_config(frame: &mut Frame, app: &mut App, area: Rect) {
+    let block = Block::default()
+        .title(" Configure ")
+        .title_style(Style::default().fg(ACCENT).add_modifier(Modifier::BOLD))
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(BORDER));
+    frame.render_widget(block, area);
+    let inner = area.inner(Margin::new(1, 1));
+
+    // No provider selected and not creating: show placeholder.
+    if app.provider_selected.is_none() && app.provider_creating.is_none() {
+        let placeholder = Paragraph::new(Line::from(vec![
+            Span::styled("Select a provider to configure.", Style::default().fg(TEXT_MUTED)),
+        ]))
+        .alignment(Alignment::Center);
+        frame.render_widget(placeholder, inner);
+        return;
+    }
+
+    // Gather fields to render.
+    let fields = if let Some(id) = app.provider_selected {
+        app.providers.iter().find(|p| p.id == id).map(|p| {
+            vec![
+                ("Name", p.name.clone()),
+                ("Type", p.provider_type.to_string()),
+                ("Model", p.model.clone()),
+                ("Base URL", p.base_url.clone()),
+                ("API Key", if p.api_key.is_empty() { "(not set)".to_string() } else { "••••••".to_string() }),
+            ]
+        })
+    } else if let Some(pt) = app.provider_creating {
+        Some(vec![
+            ("Name", format!("New {}", pt)),
+            ("Type", pt.to_string()),
+            ("Model", String::new()),
+            ("Base URL", pt.default_base_url().to_string()),
+            ("API Key", String::new()),
+        ])
+    } else {
+        None
+    };
+
+    let Some(fields) = fields else {
+        return;
+    };
+
+    // Active indicator.
+    let is_active = app.provider_selected.is_some_and(|id| app.active_provider == Some(id));
+    let active_status = if is_active {
+        Line::from(vec![
+            Span::styled("● Active", Style::default().fg(SUCCESS).add_modifier(Modifier::BOLD)),
+            Span::raw("  "),
+            Span::styled("(immediately used for LLM calls)", Style::default().fg(TEXT_MUTED)),
+        ])
+    } else {
+        Line::from(vec![
+            Span::styled("○ Inactive", Style::default().fg(TEXT_SECONDARY)),
+            Span::raw("  "),
+            Span::styled("Press Enter to activate", Style::default().fg(TEXT_MUTED)),
+        ])
+    };
+    frame.render_widget(Paragraph::new(active_status), Rect::new(inner.x, inner.y, inner.width, 1));
+
+    // Field rows.
+    let field_start = inner.y + 2;
+    let field_rows = fields.into_iter().enumerate().map(|(fi, (label, value))| {
+        let field = match fi {
+            0 => super::app::ProviderConfigField::Name,
+            1 => super::app::ProviderConfigField::Model,
+            2 => super::app::ProviderConfigField::BaseUrl,
+            _ => super::app::ProviderConfigField::ApiKey,
+        };
+        let is_focused = app.provider_config_field == field;
+        let is_edit_mode = app.provider_selected.is_some() || app.provider_creating.is_some();
+
+        let value_style = if is_focused && is_edit_mode {
+            Style::default().fg(TEXT).bg(SURFACE).add_modifier(Modifier::BOLD)
+        } else if is_focused {
+            Style::default().fg(TEXT).bg(SURFACE)
+        } else {
+            Style::default().fg(TEXT_SECONDARY)
+        };
+
+        let marker = if is_focused && is_edit_mode { "▸ " } else { "   "};
+        let truncated_value = if value.len() > inner.width as usize - 30 {
+            format!("{}…", &value[..(inner.width as usize - 33).max(1)])
+        } else {
+            value
+        };
+
+        Line::from(vec![
+            Span::styled(marker, Style::default().fg(if is_focused { ACCENT } else { TEXT_MUTED })),
+            Span::styled(format!("{:12}", label), Style::default().fg(if is_focused { TEXT } else { TEXT_SECONDARY })),
+            Span::styled(": ", Style::default().fg(TEXT_MUTED)),
+            Span::styled(truncated_value, value_style),
+        ])
+    }).collect::<Vec<_>>();
+
+    let field_area = Rect::new(inner.x, field_start, inner.width, field_rows.len() as u16);
+    frame.render_widget(Paragraph::new(field_rows), field_area);
+
+    // Delete confirmation overlay.
+    if let Some(confirm_id) = app.provider_confirm_delete {
+        let name = app.providers.iter().find(|p| p.id == confirm_id).map(|p| p.name.as_str()).unwrap_or("this provider");
+        let confirm_block = Block::default()
+            .title(" Confirm Delete ")
+            .title_style(Style::default().fg(ERROR).add_modifier(Modifier::BOLD))
+            .borders(Borders::ALL)
+            .border_style(Style::default().fg(ERROR));
+        let confirm_text = Paragraph::new(Text::from(vec![
+            Line::from(vec![
+                Span::styled("Delete ", Style::default().fg(ERROR)),
+                Span::styled(name, Style::default().fg(TEXT).add_modifier(Modifier::BOLD)),
+                Span::styled("?", Style::default().fg(ERROR)),
+            ]),
+            Line::from(vec![
+                Span::styled("Enter ", Style::default().fg(TEXT_MUTED)),
+                Span::styled("Confirm  ", Style::default().fg(SUCCESS)),
+                Span::styled("Esc ", Style::default().fg(TEXT_MUTED)),
+                Span::styled("Cancel", Style::default().fg(TEXT_SECONDARY)),
+            ]),
+        ]))
+        .alignment(Alignment::Center);
+        let confirm_rect = Rect::new(
+            inner.x + inner.width.saturating_sub(30) / 2,
+            inner.y + inner.height.saturating_sub(5) / 2,
+            30,
+            5,
+        );
+        frame.render_widget(confirm_block, confirm_rect);
+        frame.render_widget(confirm_text, confirm_rect.inner(Margin::new(1, 1)));
+    }
+
+    // Bottom hint (context-sensitive).
+    let hint_y = inner.y + inner.height;
+    let hint_line = if app.provider_confirm_delete.is_some() {
+        Line::from(vec![
+            Span::styled("Enter", Style::default().fg(TEXT_MUTED)),
+            Span::styled(" Confirm  ", Style::default().fg(SUCCESS)),
+            Span::styled("Esc", Style::default().fg(TEXT_MUTED)),
+            Span::styled(" Cancel", Style::default().fg(TEXT_SECONDARY)),
+        ])
+    } else if app.provider_selected.is_some() || app.provider_creating.is_some() {
+        Line::from(vec![
+            Span::styled("Enter ", Style::default().fg(TEXT_MUTED)),
+            Span::styled("Activate", Style::default().fg(ACCENT)),
+            Span::raw("  |  "),
+            Span::styled("↑↓ ", Style::default().fg(TEXT_MUTED)),
+            Span::styled("Edit Field", Style::default().fg(TEXT_SECONDARY)),
+            Span::raw("  |  "),
+            Span::styled("d ", Style::default().fg(TEXT_MUTED)),
+            Span::styled("Delete", Style::default().fg(TEXT_SECONDARY)),
+            Span::raw("  |  "),
+            Span::styled("Esc ", Style::default().fg(TEXT_MUTED)),
+            Span::styled("Back", Style::default().fg(TEXT_SECONDARY)),
+        ])
+    } else {
+        Line::from(vec![
             Span::styled("↑↓/j/k ", Style::default().fg(TEXT_MUTED)),
             Span::styled("Navigate", Style::default().fg(TEXT_SECONDARY)),
-        ];
-        if app.settings_cursor < 5 {
-            spans.push(Span::raw("  |  "));
-            spans.push(Span::styled("Enter/Space ", Style::default().fg(TEXT_MUTED)));
-            spans.push(Span::styled("Cycle", Style::default().fg(TEXT_SECONDARY)));
-        }
-        if app.settings_cursor == 6 {
-            spans.push(Span::raw("  |  "));
-            spans.push(Span::styled("←→/h/l", Style::default().fg(TEXT_MUTED)));
-            spans.push(Span::styled(" Model", Style::default().fg(TEXT_SECONDARY)));
-        }
-        // Rows 7-8 (API Key, Base URL) are display-only — show a quiet hint.
-        if app.settings_cursor == 7 || app.settings_cursor == 8 {
-            spans.push(Span::raw("  |  "));
-            spans.push(Span::styled("(view only)", Style::default().fg(TEXT_MUTED)));
-        }
-        spans
+            Span::raw("  |  "),
+            Span::styled("Enter ", Style::default().fg(TEXT_MUTED)),
+            Span::styled("Configure", Style::default().fg(TEXT_SECONDARY)),
+        ])
     };
-    let hint = Paragraph::new(Line::from(hint_spans))
-    .alignment(Alignment::Center);
-    let hint_area = Rect::new(
-        inner.x,
-        inner.y + inner.height - hint_height,
-        inner.width,
-        hint_height,
-    );
-    frame.render_widget(hint, hint_area);
+    frame.render_widget(Paragraph::new(hint_line), Rect::new(inner.x, hint_y, inner.width, 1));
 }
 
 // ── Status Bar ──

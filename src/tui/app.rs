@@ -1,4 +1,5 @@
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::{HashSet, VecDeque};
+use std::fmt;
 use std::fs;
 use std::path::PathBuf;
 use std::time::Instant;
@@ -36,9 +37,8 @@ pub enum Screen {
     Logs,
     Graph,
     Settings,
-}
-
-impl Screen {
+    Providers,
+}impl Screen {
     pub fn title(&self) -> &'static str {
         match self {
             Screen::Dashboard => "Dashboard",
@@ -46,8 +46,8 @@ impl Screen {
             Screen::Files => "Files",
             Screen::Logs => "Logs",
             Screen::Graph => "Graph",
-        
             Screen::Settings => "Settings",
+            Screen::Providers => "Providers",
         }
     }
 
@@ -59,6 +59,7 @@ impl Screen {
             Screen::Logs,
             Screen::Graph,
             Screen::Settings,
+            Screen::Providers,
         ]
     }
 }
@@ -134,7 +135,19 @@ pub struct App {
     pub sidebar_hover: Option<usize>,
     pub file_hover: Option<usize>,
     pub animation_speed: AnimationSpeed,
-    pub llm_provider: LlmProviderSettings,
+    // ── Providers ──
+    pub providers: Vec<ProviderEntry>,
+    pub active_provider: Option<u64>,
+    pub provider_selected: Option<u64>,
+    pub provider_creating: Option<ProviderType>,
+    pub provider_config_field: ProviderConfigField,
+    pub provider_edit_cursor: usize,
+    pub provider_confirm_delete: Option<u64>,
+    pub provider_list_cursor: usize,
+    pub provider_list_hover: Option<usize>,
+    pub provider_rect: Option<Rect>,
+    pub provider_config_rect: Option<Rect>,
+    pub next_provider_id: u64,
     // ── Text selection ──
     pub selection: Option<TextSelection>,
     pub copy_flash_ticks: u8,
@@ -226,6 +239,18 @@ impl App {
             sidebar_hover: None,
             file_hover: None,
             animation_speed: AnimationSpeed::Normal,
+            providers: Vec::new(),
+            active_provider: None,
+            provider_selected: None,
+            provider_creating: None,
+            provider_config_field: ProviderConfigField::Name,
+            provider_edit_cursor: 0,
+            provider_confirm_delete: None,
+            provider_list_cursor: 0,
+            provider_list_hover: None,
+            provider_rect: None,
+            provider_config_rect: None,
+            next_provider_id: 0,
             selection: None,
             copy_flash_ticks: 0,
             result_rect: None,
@@ -241,13 +266,16 @@ impl App {
             copy_defer_ticks: 0,
             pending_copy_source: None,
             copy_defer_duration: 3,
-            llm_provider: LlmProviderSettings::default(),
         };
         SettingsData::load().apply_to_app(&mut app);
 
-        // Wire LLM client into the orchestrator based on loaded settings.
-        if let Some(client) = SettingsData::try_build_llm_client(&app.llm_provider) {
-            app.orchestrator = Orchestrator::with_llm_client(client);
+        // Wire LLM client into the orchestrator from the active provider.
+        if let Some(id) = app.active_provider {
+            if let Some(idx) = app.providers.iter().position(|p| p.id == id) {
+                if let Some(client) = SettingsData::try_build_llm_client(&app.providers[idx]) {
+                    app.orchestrator = Orchestrator::with_llm_client(client);
+                }
+            }
         }
 
         app
@@ -343,50 +371,72 @@ impl App {
         self.save_settings();
     }
 
-    /// Cycle LLM provider (openai / anthropic).
-    pub fn cycle_llm_provider(&mut self) {
-        self.llm_provider.cycle_provider();
-        self.sync_llm_client();
-        self.save_settings();
+    // ── Provider methods ─────────────────────────────────────────────────────
+
+    /// Add a new provider from a template type and enter creation mode.
+    pub fn add_provider(&mut self, provider_type: ProviderType) {
+        let entry = ProviderEntry {
+            id: self.next_provider_id,
+            name: format!("New {}", provider_type),
+            provider_type,
+            model: String::new(),
+            base_url: provider_type.default_base_url().to_string(),
+            api_key: String::new(),
+        };
+        self.providers.push(entry);
+        self.provider_selected = Some(self.next_provider_id);
+        self.provider_creating = Some(provider_type);
+        self.provider_config_field = ProviderConfigField::Name;
+        self.provider_edit_cursor = 0;
+        self.next_provider_id += 1;
+        // Position cursor at the end of the list (add-provider section starts after providers.len()).
+        self.provider_list_cursor = self.providers.len() - 1;
     }
 
-    /// Cycle LLM model to next preset for the current provider.
-    pub fn cycle_llm_model(&mut self) {
-        match self.llm_provider.provider.as_str() {
-            "openai" => {
-                self.llm_provider.model = match self.llm_provider.model.as_str() {
-                    "gpt-4o" => "gpt-4o-mini".to_string(),
-                    "gpt-4o-mini" => "gpt-4o".to_string(),
-                    _ => "gpt-4o".to_string(),
-                };
-            }
-            "anthropic" => {
-                self.llm_provider.model = match self.llm_provider.model.as_str() {
-                    "claude-3-5-sonnet-20250620" => "claude-3-5-haiku-20250620".to_string(),
-                    "claude-3-5-haiku-20250620" => "claude-3-5-sonnet-20250620".to_string(),
-                    _ => "claude-3-5-sonnet-20250620".to_string(),
-                };
-            }
-            _ => {}
+    /// Delete the provider with the given ID after user confirmation.
+    pub fn delete_provider(&mut self, id: u64) {
+        self.providers.retain(|p| p.id != id);
+        if self.provider_selected == Some(id) {
+            self.provider_selected = None;
+            self.provider_creating = None;
         }
-        self.sync_llm_client();
-        self.save_settings();
-    }
-
-    /// Sync the LLM client in the orchestrator to match current settings.
-    fn sync_llm_client(&mut self) {
-        if let Some(client) = SettingsData::try_build_llm_client(&self.llm_provider) {
-            self.orchestrator = Orchestrator::with_llm_client(client);
-        } else {
+        if self.active_provider == Some(id) {
+            self.active_provider = None;
             self.orchestrator = Orchestrator::new();
         }
+        self.provider_confirm_delete = None;
+        self.save_settings();
     }
 
-    /// Set LLM API key (updates client and saves).
-    pub fn set_llm_api_key(&mut self, key: String) {
-        self.llm_provider.api_key = key;
-        self.sync_llm_client();
-        self.save_settings();
+    /// Activate a provider (immediately use it for LLM calls).
+    pub fn activate_provider(&mut self, id: u64) {
+        if let Some(idx) = self.providers.iter().position(|p| p.id == id) {
+            self.active_provider = Some(id);
+            if let Some(client) = SettingsData::try_build_llm_client(&self.providers[idx]) {
+                self.orchestrator = Orchestrator::with_llm_client(client);
+            }
+            self.save_settings();
+        }
+    }
+
+    /// Get a mutable reference to the selected provider, if any.
+    pub fn selected_provider_mut(&mut self) -> Option<&mut ProviderEntry> {
+        let id = self.provider_selected?;
+        let idx = self.providers.iter().position(|p| p.id == id)?;
+        Some(&mut self.providers[idx])
+    }
+
+    /// Sync the LLM client from the active provider.
+    fn sync_llm_client(&mut self) {
+        if let Some(id) = self.active_provider {
+            if let Some(idx) = self.providers.iter().position(|p| p.id == id) {
+                if let Some(client) = SettingsData::try_build_llm_client(&self.providers[idx]) {
+                    self.orchestrator = Orchestrator::with_llm_client(client);
+                    return;
+                }
+            }
+        }
+        self.orchestrator = Orchestrator::new();
     }
 
     /// Persist current settings to disk.
@@ -515,56 +565,121 @@ impl App {
     }
 }
 
-/// Serializable subset of App settings for persistence.
-/// LLM provider configuration.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(default)]
-pub struct LlmProviderSettings {
-    pub provider: String,   // "openai" or "anthropic"
-    pub model: String,      // e.g. "gpt-4o" or "claude-3-5-sonnet-20250620"
-    pub base_url: String,   // empty = use provider default
-    pub api_key: String,    // empty = use environment variable
+// ── Provider types ──────────────────────────────────────────────────────────
+
+/// The kind of LLM provider (used as template when creating a new provider).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ProviderType {
+    GenericOpenAI,
+    GenericAnthropic,
+    LMStudio,
+    Ollama,
+    LlamaCpp,
 }
 
-impl Default for LlmProviderSettings {
-    fn default() -> Self {
-        Self {
-            provider: "openai".to_string(),
-            model: "gpt-4o".to_string(),
-            base_url: String::new(),
-            api_key: String::new(),
+impl ProviderType {
+    /// Human-readable display name.
+    pub fn display_name(&self) -> &'static str {
+        match self {
+            ProviderType::GenericOpenAI => "Generic OpenAI",
+            ProviderType::GenericAnthropic => "Generic Anthropic",
+            ProviderType::LMStudio => "LM Studio",
+            ProviderType::Ollama => "Ollama",
+            ProviderType::LlamaCpp => "Llama.cpp",
+        }
+    }
+
+    /// Default base URL for this provider type (empty string = must be set by user).
+    pub fn default_base_url(&self) -> &'static str {
+        match self {
+            ProviderType::GenericOpenAI => "https://api.openai.com/v1",
+            ProviderType::GenericAnthropic => "https://api.anthropic.com/v1",
+            ProviderType::LMStudio => "http://localhost:1234/v1",
+            ProviderType::Ollama => "http://localhost:11434/v1",
+            ProviderType::LlamaCpp => "http://localhost:8080/v1",
+        }
+    }
+
+    /// Preset models for this provider type.
+    pub fn preset_models(&self) -> &'static [&'static str] {
+        match self {
+            ProviderType::GenericOpenAI => &["gpt-4o", "gpt-4o-mini"],
+            ProviderType::GenericAnthropic => &[
+                "claude-3-5-sonnet-20250620",
+                "claude-3-5-haiku-20250620",
+            ],
+            _ => &[],
         }
     }
 }
 
-impl LlmProviderSettings {
-    /// Build a ClientConfig from these settings.
+impl fmt::Display for ProviderType {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", self.display_name())
+    }
+}
+
+/// A configured LLM provider entry.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ProviderEntry {
+    pub id: u64,
+    pub name: String,
+    pub provider_type: ProviderType,
+    pub model: String,
+    pub base_url: String,
+    pub api_key: String,
+}
+
+impl ProviderEntry {
+    /// Build a ClientConfig from this provider entry.
     pub fn to_client_config(&self) -> ClientConfig {
         ClientConfig {
-            provider: self.provider.clone(),
+            provider: self.provider_type.default_base_url()
+                .trim_start_matches("http://")
+                .trim_start_matches("https://")
+                .split('/')
+                .next()
+                .unwrap_or("openai")
+                .to_string(),
             model: self.model.clone(),
-            base_url: if self.base_url.is_empty() { None } else { Some(self.base_url.clone()) },
-            api_key: if self.api_key.is_empty() { None } else { Some(self.api_key.clone()) },
+            base_url: if self.base_url.is_empty() {
+                None
+            } else {
+                Some(self.base_url.clone())
+            },
+            api_key: if self.api_key.is_empty() {
+                None
+            } else {
+                Some(self.api_key.clone())
+            },
             timeout_secs: 120,
         }
     }
+}
 
-    /// Cycle provider to next available option.
-    pub fn cycle_provider(&mut self) {
-        self.provider = match self.provider.as_str() {
-            "openai" => "anthropic".to_string(),
-            "anthropic" => "openai".to_string(),
-            _ => "openai".to_string(),
-        };
-        // Update default model when provider changes.
-        self.model = match self.provider.as_str() {
-            "openai" => "gpt-4o".to_string(),
-            "anthropic" => "claude-3-5-sonnet-20250620".to_string(),
-            _ => "gpt-4o".to_string(),
-        };
+/// Which field is focused in the provider config panel.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ProviderConfigField {
+    Name,
+    Model,
+    BaseUrl,
+    ApiKey,
+}
+
+impl ProviderConfigField {
+    pub fn label(&self) -> &'static str {
+        match self {
+            ProviderConfigField::Name => "Name",
+            ProviderConfigField::Model => "Model",
+            ProviderConfigField::BaseUrl => "Base URL",
+            ProviderConfigField::ApiKey => "API Key",
+        }
     }
 }
 
+// ── Settings data (persistence) ───────────────────────────────────────────
+
+/// Serializable subset of App settings for persistence.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(default)]
 struct SettingsData {
@@ -573,7 +688,8 @@ struct SettingsData {
     pub theme: Theme,
     pub mouse_enabled: bool,
     pub copy_defer_duration: u8,
-    pub llm_provider: LlmProviderSettings,
+    pub providers: Vec<ProviderEntry>,
+    pub active_provider: Option<u64>,
 }
 
 impl Default for SettingsData {
@@ -584,7 +700,8 @@ impl Default for SettingsData {
             theme: Theme::Sage,
             mouse_enabled: true,
             copy_defer_duration: 3,
-            llm_provider: LlmProviderSettings::default(),
+            providers: Vec::new(),
+            active_provider: None,
         }
     }
 }
@@ -597,7 +714,8 @@ impl SettingsData {
             theme: app.theme,
             mouse_enabled: app.mouse_enabled,
             copy_defer_duration: app.copy_defer_duration,
-            llm_provider: app.llm_provider.clone(),
+            providers: app.providers.clone(),
+            active_provider: app.active_provider,
         }
     }
 
@@ -607,18 +725,21 @@ impl SettingsData {
         app.theme = self.theme;
         app.mouse_enabled = self.mouse_enabled;
         app.copy_defer_duration = self.copy_defer_duration;
-        app.llm_provider = self.llm_provider.clone();
+        app.providers = self.providers.clone();
+        app.active_provider = self.active_provider;
+        if let Some(max_id) = app.providers.iter().map(|p| p.id).max() {
+            app.next_provider_id = max_id + 1;
+        }
     }
 
-    /// Try to build an LLM client from settings. Returns None if no API key is
-    /// available (neither in settings nor in environment).
-    fn try_build_llm_client(settings: &LlmProviderSettings) -> Option<LlmClient> {
+    /// Try to build an LLM client from a provider entry.
+    fn try_build_llm_client(entry: &ProviderEntry) -> Option<LlmClient> {
         let has_env_key = std::env::var("OPENAI_API_KEY").is_ok()
             || std::env::var("ANTHROPIC_API_KEY").is_ok();
-        if settings.api_key.is_empty() && !has_env_key {
+        if entry.api_key.is_empty() && !has_env_key {
             return None;
         }
-        let config = settings.to_client_config();
+        let config = entry.to_client_config();
         Some(LlmClient::new(config))
     }
 
@@ -682,7 +803,17 @@ mod tests {
             theme: Theme::Dark,
             mouse_enabled: false,
             copy_defer_duration: 10,
-            llm_provider: LlmProviderSettings::default(),
+            providers: vec![
+                ProviderEntry {
+                    id: 1,
+                    name: "My Ollama".to_string(),
+                    provider_type: ProviderType::Ollama,
+                    model: "llama3".to_string(),
+                    base_url: "http://localhost:11434/v1".to_string(),
+                    api_key: String::new(),
+                },
+            ],
+            active_provider: Some(1),
         };
         let json = serde_json::to_string(&original).unwrap();
         let parsed: SettingsData = serde_json::from_str(&json).unwrap();
@@ -697,18 +828,27 @@ mod tests {
         assert_eq!(data.theme, Theme::Sage);
         assert!(data.mouse_enabled);
         assert_eq!(data.copy_defer_duration, 3);
+        assert!(data.providers.is_empty());
+        assert_eq!(data.active_provider, None);
     }
 
     #[test]
     fn settings_data_apply_to_app() {
         let mut app = App::new();
+        app.animation_speed = AnimationSpeed::Fast;
+        app.log_filter = LogFilter::Error;
+        app.theme = Theme::Dark;
+        app.mouse_enabled = false;
+        app.copy_defer_duration = 5;
+
         let data = SettingsData {
             animation_speed: AnimationSpeed::Fast,
             log_filter: LogFilter::Error,
             theme: Theme::Dark,
             mouse_enabled: false,
             copy_defer_duration: 5,
-            llm_provider: LlmProviderSettings::default(),
+            providers: vec![],
+            active_provider: None,
         };
         data.apply_to_app(&mut app);
         assert_eq!(app.animation_speed, AnimationSpeed::Fast);
@@ -726,26 +866,17 @@ mod tests {
         app.theme = Theme::Dark;
         app.mouse_enabled = false;
         app.copy_defer_duration = 1;
-        app.llm_provider = LlmProviderSettings {
-            provider: "anthropic".to_string(),
-            model: "claude-3-5-sonnet-20250620".to_string(),
-            base_url: "https://api.anthropic.com".to_string(),
-            api_key: "sk-test-key".to_string(),
-        };
+
         let data = SettingsData::from_app(&app);
         assert_eq!(data.animation_speed, AnimationSpeed::Slow);
         assert_eq!(data.log_filter, LogFilter::Info);
         assert_eq!(data.theme, Theme::Dark);
         assert!(!data.mouse_enabled);
         assert_eq!(data.copy_defer_duration, 1);
-        assert_eq!(data.llm_provider.provider, "anthropic");
-        assert_eq!(data.llm_provider.model, "claude-3-5-sonnet-20250620");
     }
 
     #[test]
     fn settings_save_and_load() {
-        // Use a temporary config dir override isn't easy with dirs crate,
-        // so we test via path and manual read/write in a temp dir.
         let tmpdir = tempfile::tempdir().unwrap();
         let path = tmpdir.path().join("settings.json");
 
@@ -755,12 +886,15 @@ mod tests {
             theme: Theme::Dark,
             mouse_enabled: false,
             copy_defer_duration: 10,
-            llm_provider: LlmProviderSettings {
-                provider: "anthropic".to_string(),
-                model: "claude-3-5-sonnet-20250620".to_string(),
-                base_url: String::new(),
-                api_key: "sk-test-key".to_string(),
-            },
+            providers: vec![ProviderEntry {
+                id: 1,
+                name: "Test Provider".to_string(),
+                provider_type: ProviderType::Ollama,
+                model: "llama3".to_string(),
+                base_url: "http://localhost:11434/v1".to_string(),
+                api_key: String::new(),
+            }],
+            active_provider: Some(1),
         };
 
         let raw = serde_json::to_string_pretty(&original).unwrap();
@@ -781,8 +915,8 @@ mod tests {
         assert_eq!(parsed.animation_speed, AnimationSpeed::Normal); // default
         assert_eq!(parsed.log_filter, LogFilter::All);             // default
         assert_eq!(parsed.copy_defer_duration, 3);                 // default
-        assert_eq!(parsed.llm_provider.provider, "openai");        // default
-        assert_eq!(parsed.llm_provider.model, "gpt-4o");           // default
+        assert!(parsed.providers.is_empty());                       // default
+        assert_eq!(parsed.active_provider, None);                   // default
     }
 
     #[test]
@@ -792,5 +926,131 @@ mod tests {
         assert!(result.is_err());
         // Verify that the load() path would have returned defaults.
         assert_eq!(SettingsData::default().theme, Theme::Sage);
+    }
+
+    #[test]
+    fn provider_type_display_names() {
+        assert_eq!(ProviderType::GenericOpenAI.display_name(), "Generic OpenAI");
+        assert_eq!(ProviderType::GenericAnthropic.display_name(), "Generic Anthropic");
+        assert_eq!(ProviderType::LMStudio.display_name(), "LM Studio");
+        assert_eq!(ProviderType::Ollama.display_name(), "Ollama");
+        assert_eq!(ProviderType::LlamaCpp.display_name(), "Llama.cpp");
+    }
+
+    #[test]
+    fn provider_type_default_base_urls() {
+        assert_eq!(
+            ProviderType::GenericOpenAI.default_base_url(),
+            "https://api.openai.com/v1"
+        );
+        assert_eq!(
+            ProviderType::GenericAnthropic.default_base_url(),
+            "https://api.anthropic.com/v1"
+        );
+        assert_eq!(
+            ProviderType::LMStudio.default_base_url(),
+            "http://localhost:1234/v1"
+        );
+        assert_eq!(ProviderType::Ollama.default_base_url(), "http://localhost:11434/v1");
+        assert_eq!(
+            ProviderType::LlamaCpp.default_base_url(),
+            "http://localhost:8080/v1"
+        );
+    }
+
+    #[test]
+    fn provider_entry_to_client_config() {
+        let entry = ProviderEntry {
+            id: 1,
+            name: "My Ollama".to_string(),
+            provider_type: ProviderType::Ollama,
+            model: "llama3".to_string(),
+            base_url: "http://localhost:11434/v1".to_string(),
+            api_key: "test-key".to_string(),
+        };
+        let config = entry.to_client_config();
+        assert_eq!(config.model, "llama3");
+        assert_eq!(config.base_url, Some("http://localhost:11434/v1".to_string()));
+        assert_eq!(config.api_key, Some("test-key".to_string()));
+    }
+
+    #[test]
+    fn provider_entry_to_client_config_empty_base_url() {
+        let entry = ProviderEntry {
+            id: 1,
+            name: "Generic OpenAI".to_string(),
+            provider_type: ProviderType::GenericOpenAI,
+            model: "gpt-4o".to_string(),
+            base_url: String::new(),
+            api_key: "sk-test".to_string(),
+        };
+        let config = entry.to_client_config();
+        assert_eq!(config.model, "gpt-4o");
+        assert_eq!(config.base_url, None); // empty string becomes None
+        assert_eq!(config.api_key, Some("sk-test".to_string()));
+    }
+
+    #[test]
+    fn add_provider_increments_id() {
+        let mut app = App::new();
+        // Simulate fresh app with empty providers
+        app.providers.clear();
+        app.next_provider_id = 0;
+
+        app.add_provider(ProviderType::Ollama);
+        assert_eq!(app.providers.len(), 1);
+        assert_eq!(app.providers[0].id, 0);
+        assert_eq!(app.next_provider_id, 1);
+
+        app.add_provider(ProviderType::LMStudio);
+        assert_eq!(app.providers.len(), 2);
+        assert_eq!(app.providers[1].id, 1);
+        assert_eq!(app.next_provider_id, 2);
+    }
+
+    #[test]
+    fn delete_provider_removes_from_list() {
+        let mut app = App::new();
+        app.providers.clear();
+        app.next_provider_id = 2;
+        app.providers.push(ProviderEntry {
+            id: 0,
+            name: "Ollama".to_string(),
+            provider_type: ProviderType::Ollama,
+            model: "llama3".to_string(),
+            base_url: "http://localhost:11434/v1".to_string(),
+            api_key: String::new(),
+        });
+        app.providers.push(ProviderEntry {
+            id: 1,
+            name: "LM Studio".to_string(),
+            provider_type: ProviderType::LMStudio,
+            model: "model".to_string(),
+            base_url: "http://localhost:1234/v1".to_string(),
+            api_key: String::new(),
+        });
+
+        app.delete_provider(0);
+        assert_eq!(app.providers.len(), 1);
+        assert_eq!(app.providers[0].id, 1);
+    }
+
+    #[test]
+    fn delete_active_provider_clears_orchestrator() {
+        let mut app = App::new();
+        app.providers.clear();
+        app.next_provider_id = 1;
+        app.active_provider = Some(0);
+        app.providers.push(ProviderEntry {
+            id: 0,
+            name: "Ollama".to_string(),
+            provider_type: ProviderType::Ollama,
+            model: "llama3".to_string(),
+            base_url: "http://localhost:11434/v1".to_string(),
+            api_key: String::new(),
+        });
+
+        app.delete_provider(0);
+        assert_eq!(app.active_provider, None);
     }
 }
