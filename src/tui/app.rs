@@ -1,4 +1,4 @@
-use std::collections::{HashSet, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::fs;
 use std::path::PathBuf;
 use std::time::Instant;
@@ -6,6 +6,7 @@ use std::time::Instant;
 use ratatui::layout::Rect;
 use serde::{Deserialize, Serialize};
 
+use crate::agent::client::{ClientConfig, LlmClient};
 use crate::agent::orchestrator::{Orchestrator, OrchestratorState};
 use crate::codegraph::graph::CodeGraph;
 
@@ -45,6 +46,7 @@ impl Screen {
             Screen::Files => "Files",
             Screen::Logs => "Logs",
             Screen::Graph => "Graph",
+        
             Screen::Settings => "Settings",
         }
     }
@@ -132,6 +134,7 @@ pub struct App {
     pub sidebar_hover: Option<usize>,
     pub file_hover: Option<usize>,
     pub animation_speed: AnimationSpeed,
+    pub llm_provider: LlmProviderSettings,
     // ── Text selection ──
     pub selection: Option<TextSelection>,
     pub copy_flash_ticks: u8,
@@ -238,8 +241,15 @@ impl App {
             copy_defer_ticks: 0,
             pending_copy_source: None,
             copy_defer_duration: 3,
+            llm_provider: LlmProviderSettings::default(),
         };
         SettingsData::load().apply_to_app(&mut app);
+
+        // Wire LLM client into the orchestrator based on loaded settings.
+        if let Some(client) = SettingsData::try_build_llm_client(&app.llm_provider) {
+            app.orchestrator = Orchestrator::with_llm_client(client);
+        }
+
         app
     }
 
@@ -330,6 +340,52 @@ impl App {
             5 => 10,
             _ => 1,
         };
+        self.save_settings();
+    }
+
+    /// Cycle LLM provider (openai / anthropic).
+    pub fn cycle_llm_provider(&mut self) {
+        self.llm_provider.cycle_provider();
+        self.sync_llm_client();
+        self.save_settings();
+    }
+
+    /// Cycle LLM model to next preset for the current provider.
+    pub fn cycle_llm_model(&mut self) {
+        match self.llm_provider.provider.as_str() {
+            "openai" => {
+                self.llm_provider.model = match self.llm_provider.model.as_str() {
+                    "gpt-4o" => "gpt-4o-mini".to_string(),
+                    "gpt-4o-mini" => "gpt-4o".to_string(),
+                    _ => "gpt-4o".to_string(),
+                };
+            }
+            "anthropic" => {
+                self.llm_provider.model = match self.llm_provider.model.as_str() {
+                    "claude-3-5-sonnet-20250620" => "claude-3-5-haiku-20250620".to_string(),
+                    "claude-3-5-haiku-20250620" => "claude-3-5-sonnet-20250620".to_string(),
+                    _ => "claude-3-5-sonnet-20250620".to_string(),
+                };
+            }
+            _ => {}
+        }
+        self.sync_llm_client();
+        self.save_settings();
+    }
+
+    /// Sync the LLM client in the orchestrator to match current settings.
+    fn sync_llm_client(&mut self) {
+        if let Some(client) = SettingsData::try_build_llm_client(&self.llm_provider) {
+            self.orchestrator = Orchestrator::with_llm_client(client);
+        } else {
+            self.orchestrator = Orchestrator::new();
+        }
+    }
+
+    /// Set LLM API key (updates client and saves).
+    pub fn set_llm_api_key(&mut self, key: String) {
+        self.llm_provider.api_key = key;
+        self.sync_llm_client();
         self.save_settings();
     }
 
@@ -460,6 +516,55 @@ impl App {
 }
 
 /// Serializable subset of App settings for persistence.
+/// LLM provider configuration.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(default)]
+pub struct LlmProviderSettings {
+    pub provider: String,   // "openai" or "anthropic"
+    pub model: String,      // e.g. "gpt-4o" or "claude-3-5-sonnet-20250620"
+    pub base_url: String,   // empty = use provider default
+    pub api_key: String,    // empty = use environment variable
+}
+
+impl Default for LlmProviderSettings {
+    fn default() -> Self {
+        Self {
+            provider: "openai".to_string(),
+            model: "gpt-4o".to_string(),
+            base_url: String::new(),
+            api_key: String::new(),
+        }
+    }
+}
+
+impl LlmProviderSettings {
+    /// Build a ClientConfig from these settings.
+    pub fn to_client_config(&self) -> ClientConfig {
+        ClientConfig {
+            provider: self.provider.clone(),
+            model: self.model.clone(),
+            base_url: if self.base_url.is_empty() { None } else { Some(self.base_url.clone()) },
+            api_key: if self.api_key.is_empty() { None } else { Some(self.api_key.clone()) },
+            timeout_secs: 120,
+        }
+    }
+
+    /// Cycle provider to next available option.
+    pub fn cycle_provider(&mut self) {
+        self.provider = match self.provider.as_str() {
+            "openai" => "anthropic".to_string(),
+            "anthropic" => "openai".to_string(),
+            _ => "openai".to_string(),
+        };
+        // Update default model when provider changes.
+        self.model = match self.provider.as_str() {
+            "openai" => "gpt-4o".to_string(),
+            "anthropic" => "claude-3-5-sonnet-20250620".to_string(),
+            _ => "gpt-4o".to_string(),
+        };
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(default)]
 struct SettingsData {
@@ -468,6 +573,7 @@ struct SettingsData {
     pub theme: Theme,
     pub mouse_enabled: bool,
     pub copy_defer_duration: u8,
+    pub llm_provider: LlmProviderSettings,
 }
 
 impl Default for SettingsData {
@@ -478,6 +584,7 @@ impl Default for SettingsData {
             theme: Theme::Sage,
             mouse_enabled: true,
             copy_defer_duration: 3,
+            llm_provider: LlmProviderSettings::default(),
         }
     }
 }
@@ -490,6 +597,7 @@ impl SettingsData {
             theme: app.theme,
             mouse_enabled: app.mouse_enabled,
             copy_defer_duration: app.copy_defer_duration,
+            llm_provider: app.llm_provider.clone(),
         }
     }
 
@@ -499,6 +607,19 @@ impl SettingsData {
         app.theme = self.theme;
         app.mouse_enabled = self.mouse_enabled;
         app.copy_defer_duration = self.copy_defer_duration;
+        app.llm_provider = self.llm_provider.clone();
+    }
+
+    /// Try to build an LLM client from settings. Returns None if no API key is
+    /// available (neither in settings nor in environment).
+    fn try_build_llm_client(settings: &LlmProviderSettings) -> Option<LlmClient> {
+        let has_env_key = std::env::var("OPENAI_API_KEY").is_ok()
+            || std::env::var("ANTHROPIC_API_KEY").is_ok();
+        if settings.api_key.is_empty() && !has_env_key {
+            return None;
+        }
+        let config = settings.to_client_config();
+        Some(LlmClient::new(config))
     }
 
     /// Return the path to the settings JSON file (`~/.config/sage/settings.json`).
@@ -561,6 +682,7 @@ mod tests {
             theme: Theme::Dark,
             mouse_enabled: false,
             copy_defer_duration: 10,
+            llm_provider: LlmProviderSettings::default(),
         };
         let json = serde_json::to_string(&original).unwrap();
         let parsed: SettingsData = serde_json::from_str(&json).unwrap();
@@ -586,6 +708,7 @@ mod tests {
             theme: Theme::Dark,
             mouse_enabled: false,
             copy_defer_duration: 5,
+            llm_provider: LlmProviderSettings::default(),
         };
         data.apply_to_app(&mut app);
         assert_eq!(app.animation_speed, AnimationSpeed::Fast);
@@ -603,12 +726,20 @@ mod tests {
         app.theme = Theme::Dark;
         app.mouse_enabled = false;
         app.copy_defer_duration = 1;
+        app.llm_provider = LlmProviderSettings {
+            provider: "anthropic".to_string(),
+            model: "claude-3-5-sonnet-20250620".to_string(),
+            base_url: "https://api.anthropic.com".to_string(),
+            api_key: "sk-test-key".to_string(),
+        };
         let data = SettingsData::from_app(&app);
         assert_eq!(data.animation_speed, AnimationSpeed::Slow);
         assert_eq!(data.log_filter, LogFilter::Info);
         assert_eq!(data.theme, Theme::Dark);
         assert!(!data.mouse_enabled);
         assert_eq!(data.copy_defer_duration, 1);
+        assert_eq!(data.llm_provider.provider, "anthropic");
+        assert_eq!(data.llm_provider.model, "claude-3-5-sonnet-20250620");
     }
 
     #[test]
@@ -624,6 +755,12 @@ mod tests {
             theme: Theme::Dark,
             mouse_enabled: false,
             copy_defer_duration: 10,
+            llm_provider: LlmProviderSettings {
+                provider: "anthropic".to_string(),
+                model: "claude-3-5-sonnet-20250620".to_string(),
+                base_url: String::new(),
+                api_key: "sk-test-key".to_string(),
+            },
         };
 
         let raw = serde_json::to_string_pretty(&original).unwrap();
@@ -644,6 +781,8 @@ mod tests {
         assert_eq!(parsed.animation_speed, AnimationSpeed::Normal); // default
         assert_eq!(parsed.log_filter, LogFilter::All);             // default
         assert_eq!(parsed.copy_defer_duration, 3);                 // default
+        assert_eq!(parsed.llm_provider.provider, "openai");        // default
+        assert_eq!(parsed.llm_provider.model, "gpt-4o");           // default
     }
 
     #[test]
