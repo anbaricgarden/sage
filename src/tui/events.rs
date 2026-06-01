@@ -782,24 +782,7 @@ fn handle_settings_keys(app: &mut App, code: KeyCode) {
 }
 
 fn handle_providers_keys(app: &mut App, code: KeyCode) {
-    // ── Delete confirmation takes priority ──
-    if app.provider_confirm_delete.is_some() {
-        match code {
-            KeyCode::Enter => {
-                if let Some(id) = app.provider_confirm_delete.take() {
-                    app.delete_provider(id);
-                    app.set_status("Provider deleted.", crate::tui::app::StatusKind::Info);
-                }
-            }
-            KeyCode::Esc => {
-                app.provider_confirm_delete = None;
-            }
-            _ => {}
-        }
-        return;
-    }
-
-    // ── Escape: exit detail/create view → list ──
+    // ── Escape: exit detail/create view → list (always available) ──
     if code == KeyCode::Esc {
         if app.provider_detail_view.is_some() || app.provider_create_view.is_some() {
             app.exit_provider_view();
@@ -809,6 +792,21 @@ fn handle_providers_keys(app: &mut App, code: KeyCode) {
 
     // ── List view ──
     if app.provider_detail_view.is_none() && app.provider_create_view.is_none() {
+        // Delete confirmation in list view (only Enter/Esc clear it; letter keys pass through).
+        if app.provider_confirm_delete.is_some() {
+            if matches!(code, KeyCode::Enter | KeyCode::Esc) {
+                if code == KeyCode::Enter {
+                    if let Some(id) = app.provider_confirm_delete.take() {
+                        app.delete_provider(id);
+                        app.set_status("Provider deleted.", crate::tui::app::StatusKind::Info);
+                    }
+                } else {
+                    app.provider_confirm_delete = None;
+                }
+            }
+            return;
+        }
+
         let n = app.providers.len();
         let total = if n > 0 { n + 1 + 5 } else { 5 };
         let add_start = if n > 0 { n + 1 } else { 0 };
@@ -832,12 +830,10 @@ fn handle_providers_keys(app: &mut App, code: KeyCode) {
             }
             KeyCode::Enter => {
                 if app.provider_list_cursor < n {
-                    // Open provider detail view.
                     if let Some(p) = app.providers.get(app.provider_list_cursor) {
                         app.enter_provider_detail(p.id);
                     }
                 } else {
-                    // Open provider create view.
                     let di = app.provider_list_cursor - add_start;
                     let types = [ProviderType::GenericOpenAI, ProviderType::GenericAnthropic, ProviderType::LMStudio, ProviderType::Ollama, ProviderType::LlamaCpp];
                     if let Some(&pt) = types.get(di) {
@@ -858,7 +854,8 @@ fn handle_providers_keys(app: &mut App, code: KeyCode) {
     }
 
     // ── Detail or Create view ──
-    // ↑↓ cycles field focus; Tab advances; Esc goes back; d deletes; Enter activates
+    // ↑↓ cycles field focus; Tab advances; d deletes; Enter activates/saves
+    // Typing/backspace work even while a delete confirmation is showing (only d/Enter are gated).
 
     match code {
         KeyCode::Up | KeyCode::Char('k') => {
@@ -874,11 +871,19 @@ fn handle_providers_keys(app: &mut App, code: KeyCode) {
             app.provider_detail_cursor = (app.provider_detail_cursor + 1) % 5;
         }
         KeyCode::Enter => {
+            // If a delete confirmation is showing, Enter confirms it.
+            if let Some(id) = app.provider_confirm_delete.take() {
+                app.delete_provider(id);
+                app.set_status("Provider deleted.", crate::tui::app::StatusKind::Info);
+                return;
+            }
+            if app.provider_detail_view.is_none() {
+                return;
+            }
             if let Some(id) = app.provider_detail_view {
                 app.activate_provider(id);
                 app.set_status("Provider activated.", crate::tui::app::StatusKind::Success);
             } else if app.provider_create_view.is_some() {
-                // Save: create the provider and enter its detail view.
                 if let Some(pt) = app.provider_create_view {
                     app.add_provider(pt);
                     app.set_status(&format!("{} provider created.", pt), crate::tui::app::StatusKind::Success);
@@ -886,12 +891,14 @@ fn handle_providers_keys(app: &mut App, code: KeyCode) {
             }
         }
         KeyCode::Char('d') => {
-            if let Some(id) = app.provider_detail_view {
-                app.provider_confirm_delete = Some(id);
+            // Only trigger delete if no confirmation is already pending.
+            if app.provider_confirm_delete.is_none() {
+                if let Some(id) = app.provider_detail_view {
+                    app.provider_confirm_delete = Some(id);
+                }
             }
         }
         KeyCode::Char(c) => {
-            // Type into the focused field.
             let fi = app.provider_detail_cursor;
             if let Some(provider) = app.detail_provider_mut() {
                 match fi {
@@ -1234,19 +1241,13 @@ fn handle_mouse_down(
         let add_start = if n > 0 { n + 1 } else { 0 };
         let total = if n > 0 { n + 1 + 5 } else { 5 };
 
-        // In detail/create view: mouse click cycles field focus.
+        // In detail/create view: mouse click cycles field focus (wrapping).
         if app.provider_detail_view.is_some() || app.provider_create_view.is_some() {
             // Row 0 = header/status, row 1 = blank, row 2..6 = fields (Name/Type/Model/BaseUrl/ApiKey).
             let field_row = (row as usize).saturating_sub(rect.y as usize);
-            if field_row >= 2 && field_row <= 6 {
-                let fi = match field_row {
-                    2 => 0,  // Name
-                    3 => 1,  // Type (display-only, but maps to cursor 1 for completeness)
-                    4 => 2,  // Model
-                    5 => 3,  // BaseUrl
-                    6 => 4,  // ApiKey
-                    _ => return,
-                };
+            if field_row >= 2 {
+                // Wrap: clicking past the last field cycles back to the first.
+                let fi = (field_row - 2) % 5;
                 app.provider_detail_cursor = fi;
             }
             return;
