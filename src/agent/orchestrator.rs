@@ -2,6 +2,7 @@ use std::collections::HashMap;
 
 use super::action_graph::{ActionGraph, ActionNode, ActionType};
 use super::checkpoint::CheckpointManager;
+use super::client::LlmClient;
 use super::reviewer::ReviewDecision;
 use super::{EditorRole, ExecutorRole, PlannerRole, ReviewerRole};
 use crate::blob_store::BlobStore;
@@ -28,6 +29,8 @@ pub struct Orchestrator {
     pub editor: Box<dyn EditorRole>,
     pub executor: Box<dyn ExecutorRole>,
     pub reviewer: Box<dyn ReviewerRole>,
+    /// Optional LLM client for agent-based generation.
+    pub llm_client: Option<LlmClient>,
     pub checkpoints: CheckpointManager,
     pub blob_store: BlobStore,
     /// In-memory working tree: file_path -> content.
@@ -58,6 +61,29 @@ impl Orchestrator {
             editor: Box::new(EditorAgent::new()),
             executor: Box::new(ExecutorAgent::new()),
             reviewer: Box::new(ReviewerAgent::new()),
+            llm_client: None,
+            checkpoints: CheckpointManager::new(),
+            blob_store: BlobStore::new(),
+            file_contents: HashMap::new(),
+            action_graph: None,
+            history: Vec::new(),
+            token_ledger: HashMap::new(),
+        }
+    }
+
+    /// Create an Orchestrator with an LLM client wired into all agents.
+    pub fn with_llm_client(client: LlmClient) -> Self {
+        use super::editor::EditorAgent;
+        use super::executor::ExecutorAgent;
+        use super::planner::PlannerAgent;
+        use super::reviewer::ReviewerAgent;
+        Self {
+            state: OrchestratorState::Idle,
+            planner: Box::new(PlannerAgent::with_llm(client.clone())),
+            editor: Box::new(EditorAgent::with_llm(client.clone())),
+            executor: Box::new(ExecutorAgent::new()),
+            reviewer: Box::new(ReviewerAgent::with_llm(client.clone())),
+            llm_client: Some(client),
             checkpoints: CheckpointManager::new(),
             blob_store: BlobStore::new(),
             file_contents: HashMap::new(),

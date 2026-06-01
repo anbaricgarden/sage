@@ -1,17 +1,21 @@
 pub mod action_graph;
 pub mod checkpoint;
+pub mod client;
 pub mod editor;
 pub mod executor;
 pub mod orchestrator;
 pub mod planner;
+pub mod prompts;
 pub mod reviewer;
 pub mod tools;
 
 pub use action_graph::{ActionGraph, ActionNode, ActionType};
 pub use checkpoint::{Checkpoint, CheckpointManager, SnapshotStore};
+pub use client::{ClientConfig, LlmClient, Message};
 pub use executor::ExecutorAgent;
 pub use orchestrator::{Orchestrator, OrchestratorState};
 pub use planner::PlannerAgent;
+pub use prompts::PlannerTemplates;
 pub use reviewer::{ReviewDecision, ReviewerAgent};
 pub use tools::{ListDirTool, MockTool, ReadFileTool, RunTestsTool, SearchTool, Tool, WriteFileTool};
 
