@@ -1305,14 +1305,13 @@ fn handle_mouse_down(
         let rect = app.provider_rect.unwrap();
         let idx = (row as usize).saturating_sub(rect.y as usize);
         let n = app.providers.len();
-        let add_start = if n > 0 { n + 1 } else { 0 };
         let total = if n > 0 { n + 1 + 5 } else { 5 };
 
         // In detail/create view: mouse click enters edit mode on the clicked field.
         if app.provider_detail_view.is_some() || app.provider_create_view.is_some() {
-            // Row 0 = header/status, row 1 = blank, row 2..7 = fields (Name/Type/Model/BaseUrl/ApiKey/Activate).
+            // Row 0 = header/status, row 1 = blank, rows 2..7 = fields (Name/Type/Model/BaseUrl/ApiKey/Activate).
             let field_row = (row as usize).saturating_sub(rect.y as usize);
-            if field_row >= 2 && field_row < 2 + 6 {
+            if (2..8).contains(&field_row) {
                 let fi = (field_row - 2) % 6;
                 app.provider_detail_cursor = fi;
                 if fi != 5 {
@@ -1562,7 +1561,7 @@ fn handle_mouse_up(app: &mut App) {
 #[allow(clippy::too_many_arguments)]
 fn handle_mouse_moved(
     app: &mut App,
-    col: u16,
+    _col: u16,
     row: u16,
     in_sidebar: bool,
     in_file_tree: bool,
@@ -1601,7 +1600,6 @@ fn handle_mouse_moved(
         let rect = app.provider_rect.unwrap();
         let idx = (row as usize).saturating_sub(rect.y as usize);
         let n = app.providers.len();
-        let add_start = if n > 0 { n + 1 } else { n };
         let total = if n > 0 { n + 1 + 5 } else { 5 };
         if idx < total {
             app.provider_list_hover = Some(idx);

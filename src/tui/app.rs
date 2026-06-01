@@ -459,18 +459,7 @@ impl App {
         Some(&mut self.providers[idx])
     }
 
-    /// Sync the LLM client from the active provider.
-    fn sync_llm_client(&mut self) {
-        if let Some(id) = self.active_provider {
-            if let Some(idx) = self.providers.iter().position(|p| p.id == id) {
-                if let Some(client) = SettingsData::try_build_llm_client(&self.providers[idx]) {
-                    self.orchestrator = Orchestrator::with_llm_client(client);
-                    return;
-                }
-            }
-        }
-        self.orchestrator = Orchestrator::new();
-    }
+
 
     /// Persist current settings to disk.
     pub fn save_settings(&self) {
