@@ -91,7 +91,7 @@ fn render_sidebar(frame: &mut Frame, app: &mut App, area: Rect) {
     let version = env!("CARGO_PKG_VERSION");
     let title = Paragraph::new(Text::from(vec![
         Line::from(Span::styled("◆", Style::default().fg(ACCENT).add_modifier(Modifier::BOLD))),
-        Line::from(Span::styled("sage", Style::default().fg(TEXT).add_modifier(Modifier::BOLD))),
+        Line::from(Span::styled("sage!", Style::default().fg(TEXT).add_modifier(Modifier::BOLD))),
         Line::from(Span::styled(format!("v{}", version), Style::default().fg(TEXT_MUTED))),
     ]))
     .alignment(Alignment::Center);
