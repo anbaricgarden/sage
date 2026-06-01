@@ -837,33 +837,53 @@ fn handle_providers_keys(app: &mut App, code: KeyCode) {
     };
 
     match code {
-        // ── Navigation in provider list (circular) ──
+        // ── Navigation: config fields when a provider is open, list otherwise ──
         KeyCode::Up | KeyCode::Char('k') => {
-            let wrapped = app.provider_list_cursor == 0;
-            app.provider_list_cursor = app.provider_list_cursor.saturating_sub(1);
-            if wrapped && n > 0 {
-                // Wrapped past top → last add row.
-                app.provider_list_cursor = total - 1;
-                app.provider_creating = Some(ProviderType::LlamaCpp);
-                app.provider_selected = None;
+            if app.provider_selected.is_some() || app.provider_creating.is_some() {
+                // Cycle config fields backward.
+                app.provider_config_field = match app.provider_config_field {
+                    crate::tui::app::ProviderConfigField::Name => crate::tui::app::ProviderConfigField::ApiKey,
+                    crate::tui::app::ProviderConfigField::Model => crate::tui::app::ProviderConfigField::Name,
+                    crate::tui::app::ProviderConfigField::BaseUrl => crate::tui::app::ProviderConfigField::Model,
+                    crate::tui::app::ProviderConfigField::ApiKey => crate::tui::app::ProviderConfigField::BaseUrl,
+                };
             } else {
-                apply_cursor(app);
+                // Navigate the list.
+                let wrapped = app.provider_list_cursor == 0;
+                app.provider_list_cursor = app.provider_list_cursor.saturating_sub(1);
+                if wrapped && n > 0 {
+                    app.provider_list_cursor = total - 1;
+                    app.provider_creating = Some(ProviderType::LlamaCpp);
+                    app.provider_selected = None;
+                } else {
+                    apply_cursor(app);
+                }
             }
         }
         KeyCode::Down | KeyCode::Char('j') => {
-            let wrapped = app.provider_list_cursor >= total - 1;
-            app.provider_list_cursor = (app.provider_list_cursor + 1).min(total - 1);
-            if wrapped {
-                // Wrapped past bottom → first add row (or first provider if none).
-                if n == 0 {
-                    app.provider_creating = Some(ProviderType::GenericOpenAI);
-                    app.provider_selected = None;
+            if app.provider_selected.is_some() || app.provider_creating.is_some() {
+                // Cycle config fields forward.
+                app.provider_config_field = match app.provider_config_field {
+                    crate::tui::app::ProviderConfigField::Name => crate::tui::app::ProviderConfigField::Model,
+                    crate::tui::app::ProviderConfigField::Model => crate::tui::app::ProviderConfigField::BaseUrl,
+                    crate::tui::app::ProviderConfigField::BaseUrl => crate::tui::app::ProviderConfigField::ApiKey,
+                    crate::tui::app::ProviderConfigField::ApiKey => crate::tui::app::ProviderConfigField::Name,
+                };
+            } else {
+                // Navigate the list.
+                let wrapped = app.provider_list_cursor >= total - 1;
+                app.provider_list_cursor = (app.provider_list_cursor + 1).min(total - 1);
+                if wrapped {
+                    if n == 0 {
+                        app.provider_creating = Some(ProviderType::GenericOpenAI);
+                        app.provider_selected = None;
+                    } else {
+                        app.provider_list_cursor = 0;
+                        apply_cursor(app);
+                    }
                 } else {
-                    app.provider_list_cursor = 0;
                     apply_cursor(app);
                 }
-            } else {
-                apply_cursor(app);
             }
         }
 
