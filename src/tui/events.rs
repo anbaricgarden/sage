@@ -782,7 +782,7 @@ fn handle_settings_keys(app: &mut App, code: KeyCode) {
 }
 
 fn handle_providers_keys(app: &mut App, code: KeyCode) {
-    // Delete confirmation takes priority.
+    // ── Delete confirmation takes priority ──
     if app.provider_confirm_delete.is_some() {
         match code {
             KeyCode::Enter => {
@@ -799,179 +799,124 @@ fn handle_providers_keys(app: &mut App, code: KeyCode) {
         return;
     }
 
-    // Escape: deselect / exit creation mode.
+    // ── Escape: exit detail/create view → list ──
     if code == KeyCode::Esc {
-        app.provider_selected = None;
-        app.provider_creating = None;
-        app.provider_confirm_delete = None;
+        if app.provider_detail_view.is_some() || app.provider_create_view.is_some() {
+            app.exit_provider_view();
+        }
         return;
     }
 
-    let n = app.providers.len();
-    // add_start = n (no separator in navigation range — separator is purely visual)
-    let add_start = n;
-    let total = if n > 0 { n + 5 } else { 5 };
+    // ── List view ──
+    if app.provider_detail_view.is_none() && app.provider_create_view.is_none() {
+        let n = app.providers.len();
+        let total = if n > 0 { n + 1 + 5 } else { 5 };
+        let add_start = if n > 0 { n + 1 } else { 0 };
 
-    // Helper: resolve cursor position → provider selected or add template creating.
-    // Also clears the mouse hover state so keyboard nav always takes priority.
-    let apply_cursor = |app: &mut App| {
-        app.provider_list_hover = None;
-        let cursor = app.provider_list_cursor;
-        if cursor < n {
-            // Provider row.
-            if let Some(p) = app.providers.get(cursor) {
-                app.provider_selected = Some(p.id);
-                app.provider_creating = None;
-            }
-        } else {
-            // In add-section (no separator row in navigation).
-            app.provider_selected = None;
-            let di = cursor - add_start;
-            let types = [ProviderType::GenericOpenAI, ProviderType::GenericAnthropic, ProviderType::LMStudio, ProviderType::Ollama, ProviderType::LlamaCpp];
-            if let Some(&pt) = types.get(di) {
-                app.provider_creating = Some(pt);
-            } else {
-                // Out of range: clamp to last.
-                app.provider_list_cursor = total - 1;
-                app.provider_creating = Some(ProviderType::LlamaCpp);
-            }
-        }
-    };
-
-    match code {
-        // ── Navigation: config fields when a provider is open, list otherwise ──
-        KeyCode::Up | KeyCode::Char('k') => {
-            if app.provider_selected.is_some() || app.provider_creating.is_some() {
-                // Cycle config fields backward.
-                app.provider_config_field = match app.provider_config_field {
-                    crate::tui::app::ProviderConfigField::Name => crate::tui::app::ProviderConfigField::ApiKey,
-                    crate::tui::app::ProviderConfigField::Model => crate::tui::app::ProviderConfigField::Name,
-                    crate::tui::app::ProviderConfigField::BaseUrl => crate::tui::app::ProviderConfigField::Model,
-                    crate::tui::app::ProviderConfigField::ApiKey => crate::tui::app::ProviderConfigField::BaseUrl,
-                };
-            } else {
-                // Navigate the list.
+        match code {
+            KeyCode::Up | KeyCode::Char('k') => {
                 let wrapped = app.provider_list_cursor == 0;
                 app.provider_list_cursor = app.provider_list_cursor.saturating_sub(1);
                 if wrapped && n > 0 {
                     app.provider_list_cursor = total - 1;
-                    app.provider_creating = Some(ProviderType::LlamaCpp);
-                    app.provider_selected = None;
-                } else {
-                    apply_cursor(app);
                 }
+                app.provider_list_hover = None;
             }
-        }
-        KeyCode::Down | KeyCode::Char('j') => {
-            if app.provider_selected.is_some() || app.provider_creating.is_some() {
-                // Cycle config fields forward.
-                app.provider_config_field = match app.provider_config_field {
-                    crate::tui::app::ProviderConfigField::Name => crate::tui::app::ProviderConfigField::Model,
-                    crate::tui::app::ProviderConfigField::Model => crate::tui::app::ProviderConfigField::BaseUrl,
-                    crate::tui::app::ProviderConfigField::BaseUrl => crate::tui::app::ProviderConfigField::ApiKey,
-                    crate::tui::app::ProviderConfigField::ApiKey => crate::tui::app::ProviderConfigField::Name,
-                };
-            } else {
-                // Navigate the list.
+            KeyCode::Down | KeyCode::Char('j') => {
                 let wrapped = app.provider_list_cursor >= total - 1;
                 app.provider_list_cursor = (app.provider_list_cursor + 1).min(total - 1);
                 if wrapped {
-                    if n == 0 {
-                        app.provider_creating = Some(ProviderType::GenericOpenAI);
-                        app.provider_selected = None;
-                    } else {
-                        app.provider_list_cursor = 0;
-                        apply_cursor(app);
-                    }
-                } else {
-                    apply_cursor(app);
+                    app.provider_list_cursor = 0;
                 }
+                app.provider_list_hover = None;
             }
-        }
-
-        // ── Enter on list row ──
-        KeyCode::Enter => {
-            // If a provider is already selected/creating, activate it and return.
-            // (pressing Enter on an add-row while navigating just confirms that type)
-            if app.provider_selected.is_some() || app.provider_creating.is_some() {
-                if let Some(id) = app.provider_selected {
-                    app.activate_provider(id);
-                    app.set_status("Provider activated.", crate::tui::app::StatusKind::Success);
-                } else if let Some(pt) = app.provider_creating {
-                    // On an add-row: create and activate the new provider.
-                    app.add_provider(pt);
-                    if let Some(id) = app.provider_selected {
-                        app.activate_provider(id);
-                    }
-                    app.set_status(&format!("{} provider created and activated.", pt), crate::tui::app::StatusKind::Success);
-                }
-                return;
-            }
-            // Normal list navigation: open existing provider.
-            if app.provider_list_cursor < n {
-                if let Some(provider) = app.providers.get(app.provider_list_cursor) {
-                    app.provider_selected = Some(provider.id);
-                    app.provider_creating = None;
-                    app.provider_config_field = crate::tui::app::ProviderConfigField::Name;
-                    app.activate_provider(provider.id);
-                }
-            }
-        }
-
-        // ── Delete ──
-        KeyCode::Char('d') => {
-            let id = app.provider_selected.or_else(|| {
+            KeyCode::Enter => {
                 if app.provider_list_cursor < n {
-                    app.providers.get(app.provider_list_cursor).map(|p| p.id)
+                    // Open provider detail view.
+                    if let Some(p) = app.providers.get(app.provider_list_cursor) {
+                        app.enter_provider_detail(p.id);
+                    }
                 } else {
-                    None
+                    // Open provider create view.
+                    let di = app.provider_list_cursor - add_start;
+                    let types = [ProviderType::GenericOpenAI, ProviderType::GenericAnthropic, ProviderType::LMStudio, ProviderType::Ollama, ProviderType::LlamaCpp];
+                    if let Some(&pt) = types.get(di) {
+                        app.enter_provider_create(pt);
+                    }
                 }
-            });
-            if let Some(id) = id {
+            }
+            KeyCode::Char('d') => {
+                if app.provider_list_cursor < n {
+                    if let Some(p) = app.providers.get(app.provider_list_cursor) {
+                        app.provider_confirm_delete = Some(p.id);
+                    }
+                }
+            }
+            _ => {}
+        }
+        return;
+    }
+
+    // ── Detail or Create view ──
+    // ↑↓ cycles field focus; Tab advances; Esc goes back; d deletes; Enter activates
+
+    match code {
+        KeyCode::Up | KeyCode::Char('k') => {
+            app.provider_detail_cursor = app.provider_detail_cursor.saturating_sub(1);
+            if app.provider_detail_cursor > 4 {
+                app.provider_detail_cursor = 4;
+            }
+        }
+        KeyCode::Down | KeyCode::Char('j') => {
+            app.provider_detail_cursor = (app.provider_detail_cursor + 1).min(4);
+        }
+        KeyCode::Tab => {
+            app.provider_detail_cursor = (app.provider_detail_cursor + 1) % 5;
+        }
+        KeyCode::Enter => {
+            if let Some(id) = app.provider_detail_view {
+                app.activate_provider(id);
+                app.set_status("Provider activated.", crate::tui::app::StatusKind::Success);
+            } else if app.provider_create_view.is_some() {
+                // Save: create the provider and enter its detail view.
+                if let Some(pt) = app.provider_create_view {
+                    app.add_provider(pt);
+                    app.set_status(&format!("{} provider created.", pt), crate::tui::app::StatusKind::Success);
+                }
+            }
+        }
+        KeyCode::Char('d') => {
+            if let Some(id) = app.provider_detail_view {
                 app.provider_confirm_delete = Some(id);
             }
         }
-
-        // ── Tab: cycle through config fields ──
-        KeyCode::Tab => {
-            if app.provider_selected.is_some() || app.provider_creating.is_some() {
-                app.provider_config_field = match app.provider_config_field {
-                    crate::tui::app::ProviderConfigField::Name => crate::tui::app::ProviderConfigField::Model,
-                    crate::tui::app::ProviderConfigField::Model => crate::tui::app::ProviderConfigField::BaseUrl,
-                    crate::tui::app::ProviderConfigField::BaseUrl => crate::tui::app::ProviderConfigField::ApiKey,
-                    crate::tui::app::ProviderConfigField::ApiKey => crate::tui::app::ProviderConfigField::Name,
-                };
-            }
-        }
-
-        // ── Typing in config fields ──
         KeyCode::Char(c) => {
-            let field = app.provider_config_field;
-            if let Some(provider) = app.selected_provider_mut() {
-                match field {
-                    crate::tui::app::ProviderConfigField::Name => provider.name.push(c),
-                    crate::tui::app::ProviderConfigField::Model => provider.model.push(c),
-                    crate::tui::app::ProviderConfigField::BaseUrl => provider.base_url.push(c),
-                    crate::tui::app::ProviderConfigField::ApiKey => provider.api_key.push(c),
-                }
-                app.save_settings();
-            }
-        }
-
-        KeyCode::Backspace => {
-            let field = app.provider_config_field;
-            if let Some(provider) = app.selected_provider_mut() {
-                match field {
-                    crate::tui::app::ProviderConfigField::Name if !provider.name.is_empty() => { provider.name.pop(); }
-                    crate::tui::app::ProviderConfigField::Model if !provider.model.is_empty() => { provider.model.pop(); }
-                    crate::tui::app::ProviderConfigField::BaseUrl if !provider.base_url.is_empty() => { provider.base_url.pop(); }
-                    crate::tui::app::ProviderConfigField::ApiKey if !provider.api_key.is_empty() => { provider.api_key.pop(); }
+            // Type into the focused field.
+            let fi = app.provider_detail_cursor;
+            if let Some(provider) = app.detail_provider_mut() {
+                match fi {
+                    0 => provider.name.push(c),
+                    2 => provider.model.push(c),
+                    3 => provider.base_url.push(c),
+                    4 => provider.api_key.push(c),
                     _ => {}
                 }
                 app.save_settings();
             }
         }
-
+        KeyCode::Backspace => {
+            let fi = app.provider_detail_cursor;
+            if let Some(provider) = app.detail_provider_mut() {
+                match fi {
+                    0 if !provider.name.is_empty() => { provider.name.pop(); }
+                    2 if !provider.model.is_empty() => { provider.model.pop(); }
+                    3 if !provider.base_url.is_empty() => { provider.base_url.pop(); }
+                    4 if !provider.api_key.is_empty() => { provider.api_key.pop(); }
+                    _ => {}
+                }
+                app.save_settings();
+            }
+        }
         _ => {}
     }
 }
@@ -1182,11 +1127,10 @@ fn handle_mouse(app: &mut App, kind: MouseEventKind, col: u16, row: u16, modifie
     let in_result = app.result_rect.is_some_and(|r| contains(r, col, row));
     let in_file_content = app.file_content_rect.is_some_and(|r| contains(r, col, row));
     let in_provider_list = app.provider_rect.is_some_and(|r| contains(r, col, row));
-    let in_provider_config = app.provider_config_rect.is_some_and(|r| contains(r, col, row));
 
     match kind {
         MouseEventKind::Down(_) => {
-            handle_mouse_down(app, col, row, in_sidebar, in_file_tree, in_task_input, in_settings, in_result, in_file_content, in_provider_list, in_provider_config, modifiers);
+            handle_mouse_down(app, col, row, in_sidebar, in_file_tree, in_task_input, in_settings, in_result, in_file_content, in_provider_list, modifiers);
         }
         MouseEventKind::Drag(_) => {
             handle_mouse_drag(app, col, row);
@@ -1220,7 +1164,6 @@ fn handle_mouse_down(
     in_result: bool,
     in_file_content: bool,
     in_provider_list: bool,
-    in_provider_config: bool,
     modifiers: KeyModifiers,
 ) {
     // Cancel any pending deferred copy when the user clicks again.
@@ -1284,49 +1227,35 @@ fn handle_mouse_down(
                 _ => {}
             }
         }
-    } else if app.screen == Screen::Providers {
-        if in_provider_config {
-            // Click in the config panel: navigate field focus based on which row was clicked.
-            let rect = app.provider_config_rect.unwrap();
-            let row_idx = (row as usize).saturating_sub(rect.y as usize);
-            // active_status (row 0) + blank line (row 1) + field rows (rows 2..6)
-            // Clicking row 0-1 does nothing; row 2 = Name, 3 = Type(display), 4 = Model,
-            // 5 = BaseUrl, 6 = ApiKey. Map to ProviderConfigField.
-            let field = match row_idx {
-                2 => Some(crate::tui::app::ProviderConfigField::Name),
-                4 => Some(crate::tui::app::ProviderConfigField::Model),
-                5 => Some(crate::tui::app::ProviderConfigField::BaseUrl),
-                6 => Some(crate::tui::app::ProviderConfigField::ApiKey),
-                _ => None,
-            };
-            if let Some(f) = field {
-                app.provider_config_field = f;
+    } else if app.screen == Screen::Providers && in_provider_list {
+        let rect = app.provider_rect.unwrap();
+        let idx = (row as usize).saturating_sub(rect.y as usize);
+        let n = app.providers.len();
+        let add_start = if n > 0 { n + 1 } else { 0 };
+        let total = if n > 0 { n + 1 + 5 } else { 5 };
+
+        // In detail/create view: mouse click cycles field focus.
+        if app.provider_detail_view.is_some() || app.provider_create_view.is_some() {
+            // Row 0 = header/status, row 1 = blank, row 2..6 = fields (Name/Type/Model/BaseUrl/ApiKey).
+            let field_row = (row as usize).saturating_sub(rect.y as usize);
+            if field_row >= 2 && field_row <= 6 {
+                let fi = match field_row {
+                    2 => 0,  // Name
+                    3 => 1,  // Type (display-only, but maps to cursor 1 for completeness)
+                    4 => 2,  // Model
+                    5 => 3,  // BaseUrl
+                    6 => 4,  // ApiKey
+                    _ => return,
+                };
+                app.provider_detail_cursor = fi;
             }
-        } else if in_provider_list {
-            let rect = app.provider_rect.unwrap();
-            let idx = (row as usize).saturating_sub(rect.y as usize);
-            let n = app.providers.len();
-            let add_start = if n > 0 { n + 1 } else { n };
-            let total = if n > 0 { n + 1 + 5 } else { 5 };
-            if idx < total {
-                app.provider_list_cursor = idx;
-                app.provider_list_hover = Some(idx);
-                // Determine which provider or template is clicked.
-                if idx < n {
-                    if let Some(p) = app.providers.get(idx) {
-                        app.provider_selected = Some(p.id);
-                        app.provider_creating = None;
-                        app.provider_config_field = crate::tui::app::ProviderConfigField::Name;
-                    }
-                } else {
-                    let di = idx - add_start;
-                    let types = [crate::tui::app::ProviderType::GenericOpenAI, crate::tui::app::ProviderType::GenericAnthropic, crate::tui::app::ProviderType::LMStudio, crate::tui::app::ProviderType::Ollama, crate::tui::app::ProviderType::LlamaCpp];
-                    if let Some(&pt) = types.get(di) {
-                        app.provider_creating = Some(pt);
-                        app.provider_selected = None;
-                    }
-                }
-            }
+            return;
+        }
+
+        // In list view: click navigates to the clicked row.
+        if idx < total {
+            app.provider_list_cursor = idx;
+            app.provider_list_hover = Some(idx);
         }
     }
 }
@@ -1946,7 +1875,7 @@ mod tests {
         app.pending_copy_source = Some(SelectionSource::Result);
 
         // Simulate a click outside all text areas (no rects set)
-        handle_mouse_down(&mut app, 0, 0, false, false, false, false, false, false, false, false, KeyModifiers::empty());
+        handle_mouse_down(&mut app, 0, 0, false, false, false, false, false, false, false, KeyModifiers::empty());
 
         assert_eq!(app.copy_defer_ticks, 0);
         assert!(app.pending_copy_source.is_none());

@@ -138,15 +138,16 @@ pub struct App {
     // ── Providers ──
     pub providers: Vec<ProviderEntry>,
     pub active_provider: Option<u64>,
-    pub provider_selected: Option<u64>,
-    pub provider_creating: Option<ProviderType>,
-    pub provider_config_field: ProviderConfigField,
-    pub provider_edit_cursor: usize,
+    /// Which provider is in the detail view (List state when None).
+    pub provider_detail_view: Option<u64>,
+    /// Which template is being created (List state when None).
+    pub provider_create_view: Option<ProviderType>,
+    /// Cursor for cycling through config fields in detail/create view (0=Name,1=Model,2=BaseUrl,3=ApiKey).
+    pub provider_detail_cursor: usize,
     pub provider_confirm_delete: Option<u64>,
     pub provider_list_cursor: usize,
     pub provider_list_hover: Option<usize>,
     pub provider_rect: Option<Rect>,
-    pub provider_config_rect: Option<Rect>,
     pub next_provider_id: u64,
     // ── Text selection ──
     pub selection: Option<TextSelection>,
@@ -241,15 +242,13 @@ impl App {
             animation_speed: AnimationSpeed::Normal,
             providers: Vec::new(),
             active_provider: None,
-            provider_selected: None,
-            provider_creating: None,
-            provider_config_field: ProviderConfigField::Name,
-            provider_edit_cursor: 0,
+            provider_detail_view: None,
+            provider_create_view: None,
+            provider_detail_cursor: 0,
             provider_confirm_delete: None,
             provider_list_cursor: 0,
             provider_list_hover: None,
             provider_rect: None,
-            provider_config_rect: None,
             next_provider_id: 0,
             selection: None,
             copy_flash_ticks: 0,
@@ -352,10 +351,8 @@ impl App {
 
     /// Cycle theme.
     pub fn toggle_theme(&mut self) {
-        self.theme = match self.theme {
-            Theme::Sage => Theme::Dark,
-            Theme::Dark => Theme::Sage,
-        };
+        // Dark theme not yet implemented — always stays on Sage.
+        self.theme = Theme::Sage;
         self.save_settings();
     }
 
@@ -373,7 +370,28 @@ impl App {
 
     // ── Provider methods ─────────────────────────────────────────────────────
 
-    /// Add a new provider from a template type and enter creation mode.
+    /// Enter the detail view for an existing provider.
+    pub fn enter_provider_detail(&mut self, id: u64) {
+        self.provider_detail_view = Some(id);
+        self.provider_create_view = None;
+        self.provider_detail_cursor = 0;
+    }
+
+    /// Enter the create view for a provider template.
+    pub fn enter_provider_create(&mut self, provider_type: ProviderType) {
+        self.provider_detail_view = None;
+        self.provider_create_view = Some(provider_type);
+        self.provider_detail_cursor = 0;
+    }
+
+    /// Return to the provider list (close detail or create view).
+    pub fn exit_provider_view(&mut self) {
+        self.provider_detail_view = None;
+        self.provider_create_view = None;
+        self.provider_detail_cursor = 0;
+    }
+
+    /// Add a new provider from a template type and enter detail view.
     pub fn add_provider(&mut self, provider_type: ProviderType) {
         let entry = ProviderEntry {
             id: self.next_provider_id,
@@ -384,21 +402,16 @@ impl App {
             api_key: String::new(),
         };
         self.providers.push(entry);
-        self.provider_selected = Some(self.next_provider_id);
-        self.provider_creating = Some(provider_type);
-        self.provider_config_field = ProviderConfigField::Name;
-        self.provider_edit_cursor = 0;
+        let id = self.next_provider_id;
         self.next_provider_id += 1;
-        // Position cursor at the end of the list (add-provider section starts after providers.len()).
-        self.provider_list_cursor = self.providers.len() - 1;
+        self.enter_provider_detail(id);
     }
 
     /// Delete the provider with the given ID after user confirmation.
     pub fn delete_provider(&mut self, id: u64) {
         self.providers.retain(|p| p.id != id);
-        if self.provider_selected == Some(id) {
-            self.provider_selected = None;
-            self.provider_creating = None;
+        if self.provider_detail_view == Some(id) {
+            self.provider_detail_view = None;
         }
         if self.active_provider == Some(id) {
             self.active_provider = None;
@@ -419,9 +432,9 @@ impl App {
         }
     }
 
-    /// Get a mutable reference to the selected provider, if any.
-    pub fn selected_provider_mut(&mut self) -> Option<&mut ProviderEntry> {
-        let id = self.provider_selected?;
+    /// Get a mutable reference to the provider in detail view, if any.
+    pub fn detail_provider_mut(&mut self) -> Option<&mut ProviderEntry> {
+        let id = self.provider_detail_view?;
         let idx = self.providers.iter().position(|p| p.id == id)?;
         Some(&mut self.providers[idx])
     }
@@ -800,7 +813,7 @@ mod tests {
         let original = SettingsData {
             animation_speed: AnimationSpeed::Fast,
             log_filter: LogFilter::Warning,
-            theme: Theme::Dark,
+            theme: Theme::Sage,
             mouse_enabled: false,
             copy_defer_duration: 10,
             providers: vec![
@@ -837,14 +850,14 @@ mod tests {
         let mut app = App::new();
         app.animation_speed = AnimationSpeed::Fast;
         app.log_filter = LogFilter::Error;
-        app.theme = Theme::Dark;
+        app.theme = Theme::Sage;
         app.mouse_enabled = false;
         app.copy_defer_duration = 5;
 
         let data = SettingsData {
             animation_speed: AnimationSpeed::Fast,
             log_filter: LogFilter::Error,
-            theme: Theme::Dark,
+            theme: Theme::Sage,
             mouse_enabled: false,
             copy_defer_duration: 5,
             providers: vec![],
@@ -853,7 +866,7 @@ mod tests {
         data.apply_to_app(&mut app);
         assert_eq!(app.animation_speed, AnimationSpeed::Fast);
         assert_eq!(app.log_filter, LogFilter::Error);
-        assert_eq!(app.theme, Theme::Dark);
+        assert_eq!(app.theme, Theme::Sage);
         assert!(!app.mouse_enabled);
         assert_eq!(app.copy_defer_duration, 5);
     }
@@ -863,14 +876,14 @@ mod tests {
         let mut app = App::new();
         app.animation_speed = AnimationSpeed::Slow;
         app.log_filter = LogFilter::Info;
-        app.theme = Theme::Dark;
+        app.theme = Theme::Sage;
         app.mouse_enabled = false;
         app.copy_defer_duration = 1;
 
         let data = SettingsData::from_app(&app);
         assert_eq!(data.animation_speed, AnimationSpeed::Slow);
         assert_eq!(data.log_filter, LogFilter::Info);
-        assert_eq!(data.theme, Theme::Dark);
+        assert_eq!(data.theme, Theme::Sage);
         assert!(!data.mouse_enabled);
         assert_eq!(data.copy_defer_duration, 1);
     }
@@ -883,7 +896,7 @@ mod tests {
         let original = SettingsData {
             animation_speed: AnimationSpeed::Fast,
             log_filter: LogFilter::Warning,
-            theme: Theme::Dark,
+            theme: Theme::Sage,
             mouse_enabled: false,
             copy_defer_duration: 10,
             providers: vec![ProviderEntry {
@@ -908,9 +921,9 @@ mod tests {
     #[test]
     fn settings_data_missing_fields_use_defaults() {
         // Partial JSON with only some fields; #[serde(default)] fills the rest.
-        let json = r#"{"theme": "Dark", "mouse_enabled": false}"#;
+        let json = r#"{"theme": "Sage", "mouse_enabled": false}"#;
         let parsed: SettingsData = serde_json::from_str(json).unwrap();
-        assert_eq!(parsed.theme, Theme::Dark);
+        assert_eq!(parsed.theme, Theme::Sage);
         assert!(!parsed.mouse_enabled);
         assert_eq!(parsed.animation_speed, AnimationSpeed::Normal); // default
         assert_eq!(parsed.log_filter, LogFilter::All);             // default
