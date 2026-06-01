@@ -754,13 +754,25 @@ fn handle_log_keys(app: &mut App, code: KeyCode) {
 }
 
 fn handle_settings_keys(app: &mut App, code: KeyCode) {
-    const SETTINGS_COUNT: usize = 5;
+    const SETTINGS_COUNT: usize = 9;
     match code {
         KeyCode::Up | KeyCode::Char('k') => {
             app.settings_cursor = app.settings_cursor.saturating_sub(1);
         }
         KeyCode::Down | KeyCode::Char('j') => {
             app.settings_cursor = (app.settings_cursor + 1).min(SETTINGS_COUNT - 1);
+        }
+        KeyCode::Left | KeyCode::Char('h') | KeyCode::Char('H') => {
+            // Cycle model when cursor is on the model row (6).
+            if app.settings_cursor == 6 {
+                app.cycle_llm_model();
+            }
+        }
+        KeyCode::Right | KeyCode::Char('l') | KeyCode::Char('L') => {
+            // Cycle model when cursor is on the model row (6).
+            if app.settings_cursor == 6 {
+                app.cycle_llm_model();
+            }
         }
         KeyCode::Enter | KeyCode::Char(' ') => {
             match app.settings_cursor {
@@ -772,6 +784,10 @@ fn handle_settings_keys(app: &mut App, code: KeyCode) {
                 2 => app.toggle_log_filter(),
                 3 => app.toggle_theme(),
                 4 => app.toggle_copy_defer_duration(),
+                5 => app.cycle_llm_provider(),
+                // Rows 6-8: Model / API Key / Base URL — no Enter/Space action
+                // (Model uses ←→, API Key and Base URL are display-only)
+                6 | 7 | 8 => {}
                 _ => {}
             }
         }
@@ -1067,7 +1083,7 @@ fn handle_mouse_down(
     } else if app.screen == Screen::Settings && in_settings {
         let rect = app.settings_rect.unwrap();
         let idx = (row as usize).saturating_sub(rect.y as usize);
-        const SETTINGS_COUNT: usize = 5;
+        const SETTINGS_COUNT: usize = 9;
         if idx < SETTINGS_COUNT {
             app.settings_cursor = idx;
             app.settings_hover = Some(idx);
@@ -1080,6 +1096,9 @@ fn handle_mouse_down(
                 2 => app.toggle_log_filter(),
                 3 => app.toggle_theme(),
                 4 => app.toggle_copy_defer_duration(),
+                5 => app.cycle_llm_provider(),
+                // Rows 6-8: Model / API Key / Base URL — click navigates, no toggle action
+                6 | 7 | 8 => {}
                 _ => {}
             }
         }
@@ -1338,7 +1357,7 @@ fn handle_mouse_moved(app: &mut App, _col: u16, row: u16, in_sidebar: bool, in_f
     } else if app.screen == Screen::Settings && in_settings {
         let rect = app.settings_rect.unwrap();
         let idx = (row as usize).saturating_sub(rect.y as usize);
-        const SETTINGS_COUNT: usize = 5;
+        const SETTINGS_COUNT: usize = 9;
         if idx < SETTINGS_COUNT {
             app.settings_hover = Some(idx);
         }
@@ -1846,7 +1865,12 @@ mod tests {
 
     #[test]
     fn copy_defer_duration_defaults_to_three() {
-        let app = App::new();
+        // Construct App directly without loading persisted settings, then check
+        // the hard-coded default value (not whatever's in ~/.config/sage/settings.json).
+        let mut app = App {
+            copy_defer_duration: 3,
+            ..App::default()
+        };
         assert_eq!(app.copy_defer_duration, 3);
     }
 

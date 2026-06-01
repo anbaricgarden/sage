@@ -855,41 +855,55 @@ fn render_settings(frame: &mut Frame, app: &mut App, area: Rect) {
     let inner = area.inner(Margin::new(1, 1));
     frame.render_widget(block, area);
 
+    // ── Settings rows: 0-4 are general, 5-9 are LLM provider ──
     let settings: Vec<(&str, String)> = vec![
-        (
-            "Animation Speed",
-            format!("{:?}", app.animation_speed),
-        ),
+        ("Animation Speed", format!("{:?}", app.animation_speed)),
         (
             "Mouse Support",
-            if app.mouse_enabled { "On".to_string() } else { "Off".to_string() },
+            if app.mouse_enabled { "On" } else { "Off" }.to_string(),
+        ),
+        ("Log Filter", format!("{:?}", app.log_filter)),
+        ("Theme", format!("{:?}", app.theme)),
+        ("Copy Defer", format!("{}00 ms", app.copy_defer_duration)),
+        // ── LLM Provider section (rows 5-9) ──
+        ("Provider", format!("{}", app.llm_provider.provider)),
+        ("Model", format!("{}", app.llm_provider.model)),
+        (
+            "API Key",
+            if app.llm_provider.api_key.is_empty() {
+                "(env or empty)".to_string()
+            } else {
+                "********".to_string()
+            },
         ),
         (
-            "Log Filter",
-            format!("{:?}", app.log_filter),
-        ),
-        (
-            "Theme",
-            format!("{:?}", app.theme),
-        ),
-        (
-            "Copy Defer",
-            format!("{}00 ms", app.copy_defer_duration),
+            "Base URL",
+            if app.llm_provider.base_url.is_empty() {
+                "(default)".to_string()
+            } else {
+                app.llm_provider.base_url.clone()
+            },
         ),
     ];
+    // Model row (index 6) shows ◀/▶ affordance when selected.
+    let model_affordance = if app.settings_cursor == 6 { " ◀/▶" } else { "" };
 
     // Reserve space for the hint at the bottom.
     let hint_height = 1;
-    let list_area = Rect::new(inner.x, inner.y, inner.width, inner.height.saturating_sub(hint_height + 1));
-    app.settings_rect = Some(list_area);
-
-    let items: Vec<ListItem> = settings
+    let list_area = Rect::new(
+        inner.x,
+        inner.y,
+        inner.width,
+        inner.height.saturating_sub(hint_height + 1),
+    );
+    app.settings_rect = Some(list_area);    let items: Vec<ListItem> = settings
         .iter()
         .enumerate()
         .map(|(i, (label, value))| {
             let is_selected = i == app.settings_cursor;
             let is_hovered = app.settings_hover == Some(i);
-            let marker = if is_selected { "▸ " } else { "  " };
+
+            let marker = if is_selected { "▸ " } else { "  "};
             let style = if is_selected {
                 Style::default()
                     .fg(ACCENT_BRIGHT)
@@ -900,10 +914,17 @@ fn render_settings(frame: &mut Frame, app: &mut App, area: Rect) {
             } else {
                 Style::default().fg(TEXT)
             };
+            let value_style = if is_selected {
+                Style::default().fg(ACCENT)
+            } else {
+                Style::default().fg(ACCENT_DIM)
+            };
+            // For the model row, append the ◀/▶ affordance when selected.
+            let value_display = if i == 6 { format!("{}{}", value, model_affordance) } else { value.clone() };
             let content = Line::from(vec![
                 Span::styled(marker, Style::default().fg(ACCENT)),
                 Span::styled(format!("{:20}", label), style),
-                Span::styled(value.clone(), Style::default().fg(ACCENT)),
+                Span::styled(format!("{:30}", value_display), value_style),
             ]);
             ListItem::new(content)
         })
@@ -912,15 +933,37 @@ fn render_settings(frame: &mut Frame, app: &mut App, area: Rect) {
     let list = List::new(items).block(Block::default());
     frame.render_widget(list, list_area);
 
-    // Hint at the bottom.
-    let hint = Paragraph::new(Line::from(vec![
-        Span::styled("↑↓/j/k ", Style::default().fg(TEXT_MUTED)),
-        Span::styled("Navigate  ", Style::default().fg(TEXT_SECONDARY)),
-        Span::styled("Enter/Space/Click ", Style::default().fg(TEXT_MUTED)),
-        Span::styled("Toggle", Style::default().fg(TEXT_SECONDARY)),
-    ]))
+    // Hint at the bottom — content adapts to the selected row.
+    let hint_spans = {
+        let mut spans = vec![
+            Span::styled("↑↓/j/k ", Style::default().fg(TEXT_MUTED)),
+            Span::styled("Navigate", Style::default().fg(TEXT_SECONDARY)),
+        ];
+        if app.settings_cursor < 5 {
+            spans.push(Span::raw("  |  "));
+            spans.push(Span::styled("Enter/Space ", Style::default().fg(TEXT_MUTED)));
+            spans.push(Span::styled("Cycle", Style::default().fg(TEXT_SECONDARY)));
+        }
+        if app.settings_cursor == 6 {
+            spans.push(Span::raw("  |  "));
+            spans.push(Span::styled("←→/h/l", Style::default().fg(TEXT_MUTED)));
+            spans.push(Span::styled(" Model", Style::default().fg(TEXT_SECONDARY)));
+        }
+        // Rows 7-8 (API Key, Base URL) are display-only — show a quiet hint.
+        if app.settings_cursor == 7 || app.settings_cursor == 8 {
+            spans.push(Span::raw("  |  "));
+            spans.push(Span::styled("(view only)", Style::default().fg(TEXT_MUTED)));
+        }
+        spans
+    };
+    let hint = Paragraph::new(Line::from(hint_spans))
     .alignment(Alignment::Center);
-    let hint_area = Rect::new(inner.x, inner.y + inner.height - hint_height, inner.width, hint_height);
+    let hint_area = Rect::new(
+        inner.x,
+        inner.y + inner.height - hint_height,
+        inner.width,
+        hint_height,
+    );
     frame.render_widget(hint, hint_area);
 }
 
