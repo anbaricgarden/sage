@@ -142,8 +142,15 @@ pub struct App {
     pub provider_detail_view: Option<u64>,
     /// Which template is being created (List state when None).
     pub provider_create_view: Option<ProviderType>,
-    /// Cursor for cycling through config fields in detail/create view (0=Name,1=Model,2=BaseUrl,3=ApiKey).
+    /// Cursor for cycling through config fields in detail/create view (0=Name,1=Type,2=Model,3=BaseUrl,4=ApiKey,5=Activate).
     pub provider_detail_cursor: usize,
+    /// Field currently being edited (Some(index) = edit mode on that field, None = browse mode).
+    pub editing_field: Option<usize>,
+    /// Create-view in-progress form values (used until save).
+    pub provider_create_name: String,
+    pub provider_create_model: String,
+    pub provider_create_base_url: String,
+    pub provider_create_api_key: String,
     pub provider_confirm_delete: Option<u64>,
     pub provider_list_cursor: usize,
     pub provider_list_hover: Option<usize>,
@@ -245,6 +252,11 @@ impl App {
             provider_detail_view: None,
             provider_create_view: None,
             provider_detail_cursor: 0,
+            editing_field: None,
+            provider_create_name: String::new(),
+            provider_create_model: String::new(),
+            provider_create_base_url: String::new(),
+            provider_create_api_key: String::new(),
             provider_confirm_delete: None,
             provider_list_cursor: 0,
             provider_list_hover: None,
@@ -375,6 +387,7 @@ impl App {
         self.provider_detail_view = Some(id);
         self.provider_create_view = None;
         self.provider_detail_cursor = 0;
+        self.editing_field = None;
     }
 
     /// Enter the create view for a provider template.
@@ -382,6 +395,12 @@ impl App {
         self.provider_detail_view = None;
         self.provider_create_view = Some(provider_type);
         self.provider_detail_cursor = 0;
+        self.editing_field = None;
+        // Pre-fill form with defaults — user edits these before saving.
+        self.provider_create_name = format!("New {}", provider_type);
+        self.provider_create_model = String::new();
+        self.provider_create_base_url = provider_type.default_base_url().to_string();
+        self.provider_create_api_key = String::new();
     }
 
     /// Return to the provider list (close detail or create view).
@@ -389,17 +408,18 @@ impl App {
         self.provider_detail_view = None;
         self.provider_create_view = None;
         self.provider_detail_cursor = 0;
+        self.editing_field = None;
     }
 
     /// Add a new provider from a template type and enter detail view.
     pub fn add_provider(&mut self, provider_type: ProviderType) {
         let entry = ProviderEntry {
             id: self.next_provider_id,
-            name: format!("New {}", provider_type),
+            name: std::mem::take(&mut self.provider_create_name),
             provider_type,
-            model: String::new(),
-            base_url: provider_type.default_base_url().to_string(),
-            api_key: String::new(),
+            model: std::mem::take(&mut self.provider_create_model),
+            base_url: std::mem::take(&mut self.provider_create_base_url),
+            api_key: std::mem::take(&mut self.provider_create_api_key),
         };
         self.providers.push(entry);
         let id = self.next_provider_id;

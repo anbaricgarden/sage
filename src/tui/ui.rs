@@ -1062,6 +1062,7 @@ fn render_provider_detail(frame: &mut Frame, app: &mut App, area: Rect) {
     let field_start = inner.y + 2;
     let api_key_display = if provider.api_key.is_empty() { "(not set)".to_string() } else { "••••••".to_string() };
     let activate_label = if is_active { "● Active" } else { "○ Activate" };
+    let editing = app.editing_field;
     let field_rows: Vec<Line> = vec![
         ("Name", provider.name.as_str()),
         ("Type", provider.provider_type.to_string().as_str()),
@@ -1071,14 +1072,21 @@ fn render_provider_detail(frame: &mut Frame, app: &mut App, area: Rect) {
         ("", activate_label),
     ].into_iter().enumerate().map(|(fi, (label, value))| {
         let is_focused = app.provider_detail_cursor == fi;
-        let value_style = if is_focused {
+        let is_editing = editing == Some(fi);
+        let value_style = if is_editing {
+            // Edit mode: bright text on surface, inverted look
+            Style::default().fg(BG).bg(ACCENT).add_modifier(Modifier::BOLD)
+        } else if is_focused {
             Style::default().fg(TEXT).bg(SURFACE).add_modifier(Modifier::BOLD)
         } else {
             Style::default().fg(TEXT_SECONDARY)
         };
-        let marker = if is_focused { "▸ " } else { "   " };
-        let truncated = if fi == 5 {
-            // Activate row: use full width for the label
+        let marker = if is_editing { "▸ " } else if is_focused { "▸ " } else { "   " };
+        let display_value = if fi == 5 {
+            // Activate row: no truncation
+            value.to_string()
+        } else if is_editing {
+            // In edit mode: show the full value (no truncation) so user can see what they're typing
             value.to_string()
         } else if value.len() > inner.width as usize - 30 {
             format!("{}…", &value[..(inner.width as usize - 33).max(1)])
@@ -1086,10 +1094,10 @@ fn render_provider_detail(frame: &mut Frame, app: &mut App, area: Rect) {
             value.to_string()
         };
         Line::from(vec![
-            Span::styled(marker, Style::default().fg(if is_focused { ACCENT } else { TEXT_MUTED })),
-            Span::styled(format!("{:12}", label), Style::default().fg(if is_focused { TEXT } else { TEXT_SECONDARY })),
+            Span::styled(marker, Style::default().fg(if is_editing { ACCENT } else if is_focused { ACCENT } else { TEXT_MUTED })),
+            Span::styled(format!("{:12}", label), Style::default().fg(if is_editing { TEXT } else if is_focused { TEXT } else { TEXT_SECONDARY })),
             Span::styled(": ", Style::default().fg(TEXT_MUTED)),
-            Span::styled(truncated, value_style),
+            Span::styled(display_value, value_style),
         ])
     }).collect();
     let field_rows_h = field_rows.len() as u16;
@@ -1137,13 +1145,25 @@ fn render_provider_detail(frame: &mut Frame, app: &mut App, area: Rect) {
             Span::styled("Esc", Style::default().fg(TEXT_MUTED)),
             Span::styled(" Cancel", Style::default().fg(TEXT_SECONDARY)),
         ])
+    } else if app.editing_field.is_some() {
+        // Edit mode: show how to confirm/back out
+        Line::from(vec![
+            Span::styled("Enter ", Style::default().fg(TEXT_MUTED)),
+            Span::styled("Confirm", Style::default().fg(ACCENT)),
+            Span::raw("  |  "),
+            Span::styled("Esc ", Style::default().fg(TEXT_MUTED)),
+            Span::styled("Cancel Edit", Style::default().fg(TEXT_SECONDARY)),
+        ])
     } else {
         Line::from(vec![
             Span::styled("↑↓/j/k ", Style::default().fg(TEXT_MUTED)),
-            Span::styled("Cycle Fields", Style::default().fg(TEXT_SECONDARY)),
+            Span::styled("Navigate", Style::default().fg(TEXT_SECONDARY)),
+            Span::raw("  |  "),
+            Span::styled("Enter ", Style::default().fg(TEXT_MUTED)),
+            Span::styled("Edit Field", Style::default().fg(ACCENT)),
             Span::raw("  |  "),
             Span::styled("Tab ", Style::default().fg(TEXT_MUTED)),
-            Span::styled("Next Field", Style::default().fg(TEXT_SECONDARY)),
+            Span::styled("Next", Style::default().fg(TEXT_SECONDARY)),
             Span::raw("  |  "),
             Span::styled("d ", Style::default().fg(TEXT_MUTED)),
             Span::styled("Delete", Style::default().fg(TEXT_SECONDARY)),
@@ -1184,16 +1204,21 @@ fn render_provider_create(frame: &mut Frame, app: &mut App, area: Rect) {
         ("", "Save & Open →".to_string()),
     ];
     let field_start = inner.y + 2;
+    let editing = app.editing_field;
     let field_rows: Vec<Line> = fields.into_iter().enumerate().map(|(fi, (label, value))| {
         let is_focused = app.provider_detail_cursor == fi;
-        let value_style = if is_focused {
+        let is_editing = editing == Some(fi);
+        let value_style = if is_editing {
+            Style::default().fg(BG).bg(ACCENT).add_modifier(Modifier::BOLD)
+        } else if is_focused {
             Style::default().fg(TEXT).bg(SURFACE).add_modifier(Modifier::BOLD)
         } else {
             Style::default().fg(TEXT_SECONDARY)
         };
-        let marker = if is_focused { "▸ " } else { "   " };
-        let truncated = if fi == 5 {
-            // Save & Open row: use full width
+        let marker = if is_editing { "▸ " } else if is_focused { "▸ " } else { "   " };
+        let display_value = if fi == 5 {
+            value.clone()
+        } else if is_editing {
             value.clone()
         } else if value.len() > inner.width as usize - 30 {
             format!("{}…", &value[..(inner.width as usize - 33).max(1)])
@@ -1201,10 +1226,10 @@ fn render_provider_create(frame: &mut Frame, app: &mut App, area: Rect) {
             value
         };
         Line::from(vec![
-            Span::styled(marker, Style::default().fg(if is_focused { ACCENT } else { TEXT_MUTED })),
-            Span::styled(format!("{:12}", label), Style::default().fg(if is_focused { TEXT } else { TEXT_SECONDARY })),
+            Span::styled(marker, Style::default().fg(if is_editing { ACCENT } else if is_focused { ACCENT } else { TEXT_MUTED })),
+            Span::styled(format!("{:12}", label), Style::default().fg(if is_editing { TEXT } else if is_focused { TEXT } else { TEXT_SECONDARY })),
             Span::styled(": ", Style::default().fg(TEXT_MUTED)),
-            Span::styled(truncated, value_style),
+            Span::styled(display_value, value_style),
         ])
     }).collect();
     let field_rows_h = field_rows.len() as u16;
@@ -1212,19 +1237,29 @@ fn render_provider_create(frame: &mut Frame, app: &mut App, area: Rect) {
 
     // Hint bar.
     let hint_y = inner.y + inner.height.saturating_sub(1);
-    let hint_line = Line::from(vec![
-        Span::styled("↑↓/j/k ", Style::default().fg(TEXT_MUTED)),
-        Span::styled("Cycle Fields", Style::default().fg(TEXT_SECONDARY)),
-        Span::raw("  |  "),
-        Span::styled("Tab ", Style::default().fg(TEXT_MUTED)),
-        Span::styled("Next Field", Style::default().fg(TEXT_SECONDARY)),
-        Span::raw("  |  "),
-        Span::styled("Enter ", Style::default().fg(TEXT_MUTED)),
-        Span::styled("Save & Open", Style::default().fg(ACCENT)),
-        Span::raw("  |  "),
-        Span::styled("Esc ", Style::default().fg(TEXT_MUTED)),
-        Span::styled("← Back", Style::default().fg(TEXT_SECONDARY)),
-    ]);
+    let hint_line = if app.editing_field.is_some() {
+        Line::from(vec![
+            Span::styled("Enter ", Style::default().fg(TEXT_MUTED)),
+            Span::styled("Confirm", Style::default().fg(ACCENT)),
+            Span::raw("  |  "),
+            Span::styled("Esc ", Style::default().fg(TEXT_MUTED)),
+            Span::styled("Cancel Edit", Style::default().fg(TEXT_SECONDARY)),
+        ])
+    } else {
+        Line::from(vec![
+            Span::styled("↑↓/j/k ", Style::default().fg(TEXT_MUTED)),
+            Span::styled("Navigate", Style::default().fg(TEXT_SECONDARY)),
+            Span::raw("  |  "),
+            Span::styled("Enter ", Style::default().fg(TEXT_MUTED)),
+            Span::styled("Edit Field", Style::default().fg(ACCENT)),
+            Span::raw("  |  "),
+            Span::styled("Tab ", Style::default().fg(TEXT_MUTED)),
+            Span::styled("Next", Style::default().fg(TEXT_SECONDARY)),
+            Span::raw("  |  "),
+            Span::styled("Esc ", Style::default().fg(TEXT_MUTED)),
+            Span::styled("← Back", Style::default().fg(TEXT_SECONDARY)),
+        ])
+    };
     frame.render_widget(Paragraph::new(hint_line), Rect::new(inner.x, hint_y, inner.width, 1));
 }
 

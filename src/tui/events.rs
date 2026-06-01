@@ -851,14 +851,47 @@ fn handle_providers_keys(app: &mut App, code: KeyCode) {
             _ => {}
         }
         return;
+    }        // ── Detail or Create view ──
+        // ↑↓/Tab always navigate fields. Enter enters edit mode or confirms activation.
+        // While editing a field, typing/backspace work on that field.
+
+    // If a delete confirmation is showing, only Enter/Esc handle it; all other keys pass through.
+    if app.provider_confirm_delete.is_some() {
+        if matches!(code, KeyCode::Enter | KeyCode::Esc) {
+            if code == KeyCode::Enter {
+                if let Some(id) = app.provider_confirm_delete.take() {
+                    app.delete_provider(id);
+                    app.set_status("Provider deleted.", crate::tui::app::StatusKind::Info);
+                }
+            } else {
+                app.provider_confirm_delete = None;
+            }
+        }
+        return;
     }
 
-    // ── Detail or Create view ──
-    // ↑↓ cycles field focus; Tab advances; d deletes; Enter activates/saves
-    // Typing/backspace work even while a delete confirmation is showing (only d/Enter are gated).
+    // In create view, Enter on Activate row (5) saves and opens detail.
+    // In detail view, Enter on Activate row activates the provider.
+    if app.provider_detail_cursor == 5 {
+        if code == KeyCode::Enter {
+            if let Some(pt) = app.provider_create_view {
+                app.add_provider(pt);
+                app.set_status(&format!("{} provider created.", pt), crate::tui::app::StatusKind::Success);
+            } else if let Some(id) = app.provider_detail_view {
+                app.activate_provider(id);
+                app.set_status("Provider activated.", crate::tui::app::StatusKind::Success);
+            }
+            return;
+        }
+        // Activate row is not editable: ignore typing/backspace
+        if matches!(code, KeyCode::Char(_) | KeyCode::Backspace) {
+            return;
+        }
+    }
 
     match code {
         KeyCode::Up | KeyCode::Char('k') => {
+            app.editing_field = None; // exit edit mode when navigating
             if app.provider_detail_cursor == 0 {
                 app.provider_detail_cursor = 5;
             } else {
@@ -866,54 +899,56 @@ fn handle_providers_keys(app: &mut App, code: KeyCode) {
             }
         }
         KeyCode::Down | KeyCode::Char('j') => {
+            app.editing_field = None; // exit edit mode when navigating
             app.provider_detail_cursor = (app.provider_detail_cursor + 1) % 6;
         }
         KeyCode::Tab => {
+            app.editing_field = None; // exit edit mode when navigating
             app.provider_detail_cursor = (app.provider_detail_cursor + 1) % 6;
         }
-        KeyCode::Enter => {
-            // If a delete confirmation is showing, Enter confirms it (works on any row).
-            if let Some(id) = app.provider_confirm_delete.take() {
-                app.delete_provider(id);
-                app.set_status("Provider deleted.", crate::tui::app::StatusKind::Info);
-                return;
-            }
-            // Enter only activates/saves when on the last row (Activate / Save & Open).
-            if app.provider_detail_cursor != 5 {
-                return;
-            }
-            if let Some(id) = app.provider_detail_view {
-                app.activate_provider(id);
-                app.set_status("Provider activated.", crate::tui::app::StatusKind::Success);
-            } else if let Some(pt) = app.provider_create_view {
-                app.add_provider(pt);
-                app.set_status(&format!("{} provider created.", pt), crate::tui::app::StatusKind::Success);
+        KeyCode::Esc => {
+            // If editing a field, exit edit mode. Otherwise exit detail/create view.
+            if app.editing_field.take().is_none() {
+                app.exit_provider_view();
             }
         }
-        KeyCode::Char('d') => {
-            // Only trigger delete if no confirmation is already pending.
-            if app.provider_confirm_delete.is_none() {
-                if let Some(id) = app.provider_detail_view {
-                    app.provider_confirm_delete = Some(id);
+        KeyCode::Enter => {
+            // Enter on a non-Activate field: enter or exit edit mode for that field.
+            if app.provider_detail_cursor != 5 {
+                if app.editing_field == Some(app.provider_detail_cursor) {
+                    // Already editing this field: confirm and exit edit mode.
+                    app.editing_field = None;
+                } else {
+                    // Enter edit mode on the current field.
+                    app.editing_field = Some(app.provider_detail_cursor);
                 }
             }
         }
         KeyCode::Char(c) => {
-            let fi = app.provider_detail_cursor;
-            if fi == 5 {
-                return; // Activate/Save row is not editable
+            // Only type if we're in edit mode on this specific field.
+            if app.editing_field != Some(app.provider_detail_cursor) {
+                return;
             }
-            // Read create-view flag BEFORE borrowing provider to avoid E0502.
-            let in_create_view = app.provider_create_view.is_some();
-            if let Some(provider) = app.detail_provider_mut() {
+            let fi = app.provider_detail_cursor;
+
+            // Write to in-progress create-view form fields, or to the provider entry in detail view.
+            if app.provider_create_view.is_some() {
                 match fi {
                     0 => {
-                        // Only clear default name in create view (where name starts with "New <Type>")
-                        if in_create_view && provider.name.starts_with("New ") {
-                            provider.name.clear();
+                        if app.provider_create_name.starts_with("New ") {
+                            app.provider_create_name.clear();
                         }
-                        provider.name.push(c);
+                        app.provider_create_name.push(c);
                     }
+                    2 => app.provider_create_model.push(c),
+                    3 => app.provider_create_base_url.push(c),
+                    4 => app.provider_create_api_key.push(c),
+                    _ => {}
+                }
+                app.save_settings();
+            } else if let Some(provider) = app.detail_provider_mut() {
+                match fi {
+                    0 => provider.name.push(c),
                     2 => provider.model.push(c),
                     3 => provider.base_url.push(c),
                     4 => provider.api_key.push(c),
@@ -923,11 +958,22 @@ fn handle_providers_keys(app: &mut App, code: KeyCode) {
             }
         }
         KeyCode::Backspace => {
-            let fi = app.provider_detail_cursor;
-            if fi == 5 {
-                return; // Activate/Save row is not editable
+            // Only backspace if we're in edit mode on this specific field.
+            if app.editing_field != Some(app.provider_detail_cursor) {
+                return;
             }
-            if let Some(provider) = app.detail_provider_mut() {
+            let fi = app.provider_detail_cursor;
+
+            if app.provider_create_view.is_some() {
+                match fi {
+                    0 if !app.provider_create_name.is_empty() => { app.provider_create_name.pop(); }
+                    2 if !app.provider_create_model.is_empty() => { app.provider_create_model.pop(); }
+                    3 if !app.provider_create_base_url.is_empty() => { app.provider_create_base_url.pop(); }
+                    4 if !app.provider_create_api_key.is_empty() => { app.provider_create_api_key.pop(); }
+                    _ => {}
+                }
+                app.save_settings();
+            } else if let Some(provider) = app.detail_provider_mut() {
                 match fi {
                     0 if !provider.name.is_empty() => { provider.name.pop(); }
                     2 if !provider.model.is_empty() => { provider.model.pop(); }
@@ -936,6 +982,13 @@ fn handle_providers_keys(app: &mut App, code: KeyCode) {
                     _ => {}
                 }
                 app.save_settings();
+            }
+        }
+        KeyCode::Char('d') => {
+            if app.provider_confirm_delete.is_none() {
+                if let Some(id) = app.provider_detail_view {
+                    app.provider_confirm_delete = Some(id);
+                }
             }
         }
         _ => {}
@@ -1255,14 +1308,17 @@ fn handle_mouse_down(
         let add_start = if n > 0 { n + 1 } else { 0 };
         let total = if n > 0 { n + 1 + 5 } else { 5 };
 
-        // In detail/create view: mouse click cycles field focus (wrapping).
+        // In detail/create view: mouse click enters edit mode on the clicked field.
         if app.provider_detail_view.is_some() || app.provider_create_view.is_some() {
             // Row 0 = header/status, row 1 = blank, row 2..7 = fields (Name/Type/Model/BaseUrl/ApiKey/Activate).
             let field_row = (row as usize).saturating_sub(rect.y as usize);
-            if field_row >= 2 {
-                // Wrap: clicking past the last field cycles back to the first.
+            if field_row >= 2 && field_row < 2 + 6 {
                 let fi = (field_row - 2) % 6;
                 app.provider_detail_cursor = fi;
+                if fi != 5 {
+                    // Enter edit mode for non-Activate fields on click.
+                    app.editing_field = Some(fi);
+                }
             }
             return;
         }
