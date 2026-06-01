@@ -859,35 +859,35 @@ fn handle_providers_keys(app: &mut App, code: KeyCode) {
 
     match code {
         KeyCode::Up | KeyCode::Char('k') => {
-            app.provider_detail_cursor = app.provider_detail_cursor.saturating_sub(1);
-            if app.provider_detail_cursor > 4 {
-                app.provider_detail_cursor = 4;
+            if app.provider_detail_cursor == 0 {
+                app.provider_detail_cursor = 5;
+            } else {
+                app.provider_detail_cursor -= 1;
             }
         }
         KeyCode::Down | KeyCode::Char('j') => {
-            app.provider_detail_cursor = (app.provider_detail_cursor + 1).min(4);
+            app.provider_detail_cursor = (app.provider_detail_cursor + 1) % 6;
         }
         KeyCode::Tab => {
-            app.provider_detail_cursor = (app.provider_detail_cursor + 1) % 5;
+            app.provider_detail_cursor = (app.provider_detail_cursor + 1) % 6;
         }
         KeyCode::Enter => {
-            // If a delete confirmation is showing, Enter confirms it.
+            // If a delete confirmation is showing, Enter confirms it (works on any row).
             if let Some(id) = app.provider_confirm_delete.take() {
                 app.delete_provider(id);
                 app.set_status("Provider deleted.", crate::tui::app::StatusKind::Info);
                 return;
             }
-            if app.provider_detail_view.is_none() {
+            // Enter only activates/saves when on the last row (Activate / Save & Open).
+            if app.provider_detail_cursor != 5 {
                 return;
             }
             if let Some(id) = app.provider_detail_view {
                 app.activate_provider(id);
                 app.set_status("Provider activated.", crate::tui::app::StatusKind::Success);
-            } else if app.provider_create_view.is_some() {
-                if let Some(pt) = app.provider_create_view {
-                    app.add_provider(pt);
-                    app.set_status(&format!("{} provider created.", pt), crate::tui::app::StatusKind::Success);
-                }
+            } else if let Some(pt) = app.provider_create_view {
+                app.add_provider(pt);
+                app.set_status(&format!("{} provider created.", pt), crate::tui::app::StatusKind::Success);
             }
         }
         KeyCode::Char('d') => {
@@ -900,9 +900,20 @@ fn handle_providers_keys(app: &mut App, code: KeyCode) {
         }
         KeyCode::Char(c) => {
             let fi = app.provider_detail_cursor;
+            if fi == 5 {
+                return; // Activate/Save row is not editable
+            }
+            // Read create-view flag BEFORE borrowing provider to avoid E0502.
+            let in_create_view = app.provider_create_view.is_some();
             if let Some(provider) = app.detail_provider_mut() {
                 match fi {
-                    0 => provider.name.push(c),
+                    0 => {
+                        // Only clear default name in create view (where name starts with "New <Type>")
+                        if in_create_view && provider.name.starts_with("New ") {
+                            provider.name.clear();
+                        }
+                        provider.name.push(c);
+                    }
                     2 => provider.model.push(c),
                     3 => provider.base_url.push(c),
                     4 => provider.api_key.push(c),
@@ -913,6 +924,9 @@ fn handle_providers_keys(app: &mut App, code: KeyCode) {
         }
         KeyCode::Backspace => {
             let fi = app.provider_detail_cursor;
+            if fi == 5 {
+                return; // Activate/Save row is not editable
+            }
             if let Some(provider) = app.detail_provider_mut() {
                 match fi {
                     0 if !provider.name.is_empty() => { provider.name.pop(); }
@@ -1243,11 +1257,11 @@ fn handle_mouse_down(
 
         // In detail/create view: mouse click cycles field focus (wrapping).
         if app.provider_detail_view.is_some() || app.provider_create_view.is_some() {
-            // Row 0 = header/status, row 1 = blank, row 2..6 = fields (Name/Type/Model/BaseUrl/ApiKey).
+            // Row 0 = header/status, row 1 = blank, row 2..7 = fields (Name/Type/Model/BaseUrl/ApiKey/Activate).
             let field_row = (row as usize).saturating_sub(rect.y as usize);
             if field_row >= 2 {
                 // Wrap: clicking past the last field cycles back to the first.
-                let fi = (field_row - 2) % 5;
+                let fi = (field_row - 2) % 6;
                 app.provider_detail_cursor = fi;
             }
             return;

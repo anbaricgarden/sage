@@ -1058,15 +1058,17 @@ fn render_provider_detail(frame: &mut Frame, app: &mut App, area: Rect) {
     };
     frame.render_widget(Paragraph::new(status_line), Rect::new(inner.x, inner.y, inner.width, 1));
 
-    // Field rows: 0=Name, 1=Type, 2=Model, 3=BaseUrl, 4=ApiKey
+    // Field rows: 0=Name, 1=Type, 2=Model, 3=BaseUrl, 4=ApiKey, 5=Activate
     let field_start = inner.y + 2;
     let api_key_display = if provider.api_key.is_empty() { "(not set)".to_string() } else { "••••••".to_string() };
+    let activate_label = if is_active { "● Active" } else { "○ Activate" };
     let field_rows: Vec<Line> = vec![
         ("Name", provider.name.as_str()),
         ("Type", provider.provider_type.to_string().as_str()),
         ("Model", provider.model.as_str()),
         ("Base URL", provider.base_url.as_str()),
         ("API Key", api_key_display.as_str()),
+        ("", activate_label),
     ].into_iter().enumerate().map(|(fi, (label, value))| {
         let is_focused = app.provider_detail_cursor == fi;
         let value_style = if is_focused {
@@ -1075,7 +1077,10 @@ fn render_provider_detail(frame: &mut Frame, app: &mut App, area: Rect) {
             Style::default().fg(TEXT_SECONDARY)
         };
         let marker = if is_focused { "▸ " } else { "   " };
-        let truncated = if value.len() > inner.width as usize - 30 {
+        let truncated = if fi == 5 {
+            // Activate row: use full width for the label
+            value.to_string()
+        } else if value.len() > inner.width as usize - 30 {
             format!("{}…", &value[..(inner.width as usize - 33).max(1)])
         } else {
             value.to_string()
@@ -1137,9 +1142,6 @@ fn render_provider_detail(frame: &mut Frame, app: &mut App, area: Rect) {
             Span::styled("↑↓/j/k ", Style::default().fg(TEXT_MUTED)),
             Span::styled("Cycle Fields", Style::default().fg(TEXT_SECONDARY)),
             Span::raw("  |  "),
-            Span::styled("Enter ", Style::default().fg(TEXT_MUTED)),
-            Span::styled("Activate", Style::default().fg(ACCENT)),
-            Span::raw("  |  "),
             Span::styled("Tab ", Style::default().fg(TEXT_MUTED)),
             Span::styled("Next Field", Style::default().fg(TEXT_SECONDARY)),
             Span::raw("  |  "),
@@ -1172,13 +1174,14 @@ fn render_provider_create(frame: &mut Frame, app: &mut App, area: Rect) {
         Span::styled("Save to activate", Style::default().fg(TEXT_MUTED)),
     ])), Rect::new(inner.x, inner.y, inner.width, 1));
 
-    // Field rows: 0=Name, 1=Type, 2=Model, 3=BaseUrl, 4=ApiKey
+    // Field rows: 0=Name, 1=Type, 2=Model, 3=BaseUrl, 4=ApiKey, 5=Save & Open
     let fields = vec![
         ("Name", format!("New {}", pt)),
         ("Type", pt.to_string()),
         ("Model", String::new()),
         ("Base URL", pt.default_base_url().to_string()),
         ("API Key", String::new()),
+        ("", "Save & Open →".to_string()),
     ];
     let field_start = inner.y + 2;
     let field_rows: Vec<Line> = fields.into_iter().enumerate().map(|(fi, (label, value))| {
@@ -1189,7 +1192,10 @@ fn render_provider_create(frame: &mut Frame, app: &mut App, area: Rect) {
             Style::default().fg(TEXT_SECONDARY)
         };
         let marker = if is_focused { "▸ " } else { "   " };
-        let truncated = if value.len() > inner.width as usize - 30 {
+        let truncated = if fi == 5 {
+            // Save & Open row: use full width
+            value.clone()
+        } else if value.len() > inner.width as usize - 30 {
             format!("{}…", &value[..(inner.width as usize - 33).max(1)])
         } else {
             value
