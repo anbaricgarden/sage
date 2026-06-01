@@ -947,7 +947,13 @@ fn render_provider_list(frame: &mut Frame, app: &mut App, area: Rect) {
 
     // Configured providers (0 .. n-1).
     for (i, provider) in app.providers.iter().enumerate() {
-        let is_selected = app.provider_selected == Some(provider.id);
+        // Use cursor as primary when on a provider row; use id-based only when in add-section.
+        let cursor_on_provider = app.provider_list_cursor < n;
+        let is_selected = if cursor_on_provider {
+            app.provider_list_cursor == i
+        } else {
+            app.provider_selected == Some(provider.id)
+        };
         let is_active = app.active_provider == Some(provider.id);
         let is_hovered = app.provider_list_hover == Some(i);
         let marker = if is_selected { "▸ " } else { "  "};
@@ -982,7 +988,7 @@ fn render_provider_list(frame: &mut Frame, app: &mut App, area: Rect) {
     let add_start = if n > 0 { n + 1 } else { n };
     for (di, pt) in [ProviderType::GenericOpenAI, ProviderType::GenericAnthropic, ProviderType::LMStudio, ProviderType::Ollama, ProviderType::LlamaCpp].iter().enumerate() {
         let row_idx = add_start + di;
-        let is_selected = app.provider_list_cursor == row_idx && app.provider_creating == Some(*pt);
+        let is_selected = app.provider_list_cursor == row_idx;
         let is_hovered = app.provider_list_hover == Some(row_idx);
         let marker = if is_selected { "▸ " } else { "  "};
         let style = if is_selected {
@@ -1050,8 +1056,17 @@ fn render_provider_config(frame: &mut Frame, app: &mut App, area: Rect) {
         return;
     }
 
-    // Gather fields to render.
-    let fields = if let Some(id) = app.provider_selected {
+    // Gather fields to render — check provider_creating FIRST (add-template takes priority
+    // over any stale provider_selected from a previous session).
+    let fields = if let Some(pt) = app.provider_creating {
+        Some(vec![
+            ("Name", format!("New {}", pt)),
+            ("Type", pt.to_string()),
+            ("Model", String::new()),
+            ("Base URL", pt.default_base_url().to_string()),
+            ("API Key", String::new()),
+        ])
+    } else if let Some(id) = app.provider_selected {
         app.providers.iter().find(|p| p.id == id).map(|p| {
             vec![
                 ("Name", p.name.clone()),
@@ -1061,14 +1076,6 @@ fn render_provider_config(frame: &mut Frame, app: &mut App, area: Rect) {
                 ("API Key", if p.api_key.is_empty() { "(not set)".to_string() } else { "••••••".to_string() }),
             ]
         })
-    } else if let Some(pt) = app.provider_creating {
-        Some(vec![
-            ("Name", format!("New {}", pt)),
-            ("Type", pt.to_string()),
-            ("Model", String::new()),
-            ("Base URL", pt.default_base_url().to_string()),
-            ("API Key", String::new()),
-        ])
     } else {
         None
     };
@@ -1096,16 +1103,20 @@ fn render_provider_config(frame: &mut Frame, app: &mut App, area: Rect) {
 
     // Field rows.
     let field_start = inner.y + 2;
-    let field_rows = fields.into_iter().enumerate().map(|(fi, (label, value))| {
-        let field = match fi {
-            0 => super::app::ProviderConfigField::Name,
-            1 => super::app::ProviderConfigField::Model,
-            2 => super::app::ProviderConfigField::BaseUrl,
-            _ => super::app::ProviderConfigField::ApiKey,
-        };
-        let is_focused = app.provider_config_field == field;
+    // focused_idx maps ProviderConfigField → field-array index.
+    // fi: 0=Name, 1=Type (display-only — no ProviderConfigField maps to fi=1), 2=Model, 3=BaseUrl, 4=ApiKey
+    // Explicit arms for every fi ensure exactly one row highlights at a time.
+    let focused_idx: Option<usize> = match app.provider_config_field {
+        crate::tui::app::ProviderConfigField::Name => Some(0),
+        crate::tui::app::ProviderConfigField::Model => Some(2),
+        crate::tui::app::ProviderConfigField::BaseUrl => Some(3),
+        crate::tui::app::ProviderConfigField::ApiKey => Some(4),
+    };
+    let field_rows: Vec<Line> = fields.into_iter().enumerate().map(|(fi, (label, value))| {
+        let is_focused = focused_idx == Some(fi);
         let is_edit_mode = app.provider_selected.is_some() || app.provider_creating.is_some();
 
+        // Only render interactive marker + value style for navigable fields.
         let value_style = if is_focused && is_edit_mode {
             Style::default().fg(TEXT).bg(SURFACE).add_modifier(Modifier::BOLD)
         } else if is_focused {
@@ -1127,9 +1138,7 @@ fn render_provider_config(frame: &mut Frame, app: &mut App, area: Rect) {
             Span::styled(": ", Style::default().fg(TEXT_MUTED)),
             Span::styled(truncated_value, value_style),
         ])
-    }).collect::<Vec<_>>();
-
-    let field_area = Rect::new(inner.x, field_start, inner.width, field_rows.len() as u16);
+    }).collect();    let field_area = Rect::new(inner.x, field_start, inner.width, field_rows.len() as u16);
     frame.render_widget(Paragraph::new(field_rows), field_area);
 
     // Delete confirmation overlay.
@@ -1153,7 +1162,7 @@ fn render_provider_config(frame: &mut Frame, app: &mut App, area: Rect) {
                 Span::styled("Cancel", Style::default().fg(TEXT_SECONDARY)),
             ]),
         ]))
-        .alignment(Alignment::Center);
+            .alignment(Alignment::Center);
         let confirm_rect = Rect::new(
             inner.x + inner.width.saturating_sub(30) / 2,
             inner.y + inner.height.saturating_sub(5) / 2,

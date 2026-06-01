@@ -813,7 +813,9 @@ fn handle_providers_keys(app: &mut App, code: KeyCode) {
     let total = if n > 0 { n + 5 } else { 5 };
 
     // Helper: resolve cursor position → provider selected or add template creating.
+    // Also clears the mouse hover state so keyboard nav always takes priority.
     let apply_cursor = |app: &mut App| {
+        app.provider_list_hover = None;
         let cursor = app.provider_list_cursor;
         if cursor < n {
             // Provider row.
@@ -1179,10 +1181,12 @@ fn handle_mouse(app: &mut App, kind: MouseEventKind, col: u16, row: u16, modifie
     let in_settings = app.settings_rect.is_some_and(|r| contains(r, col, row));
     let in_result = app.result_rect.is_some_and(|r| contains(r, col, row));
     let in_file_content = app.file_content_rect.is_some_and(|r| contains(r, col, row));
+    let in_provider_list = app.provider_rect.is_some_and(|r| contains(r, col, row));
+    let in_provider_config = app.provider_config_rect.is_some_and(|r| contains(r, col, row));
 
     match kind {
         MouseEventKind::Down(_) => {
-            handle_mouse_down(app, col, row, in_sidebar, in_file_tree, in_task_input, in_settings, in_result, in_file_content, modifiers);
+            handle_mouse_down(app, col, row, in_sidebar, in_file_tree, in_task_input, in_settings, in_result, in_file_content, in_provider_list, in_provider_config, modifiers);
         }
         MouseEventKind::Drag(_) => {
             handle_mouse_drag(app, col, row);
@@ -1191,7 +1195,7 @@ fn handle_mouse(app: &mut App, kind: MouseEventKind, col: u16, row: u16, modifie
             handle_mouse_up(app);
         }
         MouseEventKind::Moved => {
-            handle_mouse_moved(app, col, row, in_sidebar, in_file_tree, in_settings);
+            handle_mouse_moved(app, col, row, in_sidebar, in_file_tree, in_settings, in_provider_list);
         }
         MouseEventKind::ScrollUp => {
             handle_mouse_scroll(app, in_file_tree, in_file_content, in_result, -1);
@@ -1215,6 +1219,8 @@ fn handle_mouse_down(
     in_settings: bool,
     in_result: bool,
     in_file_content: bool,
+    in_provider_list: bool,
+    in_provider_config: bool,
     modifiers: KeyModifiers,
 ) {
     // Cancel any pending deferred copy when the user clicks again.
@@ -1276,6 +1282,50 @@ fn handle_mouse_down(
                 3 => app.toggle_theme(),
                 4 => app.toggle_copy_defer_duration(),
                 _ => {}
+            }
+        }
+    } else if app.screen == Screen::Providers {
+        if in_provider_config {
+            // Click in the config panel: navigate field focus based on which row was clicked.
+            let rect = app.provider_config_rect.unwrap();
+            let row_idx = (row as usize).saturating_sub(rect.y as usize);
+            // active_status (row 0) + blank line (row 1) + field rows (rows 2..6)
+            // Clicking row 0-1 does nothing; row 2 = Name, 3 = Type(display), 4 = Model,
+            // 5 = BaseUrl, 6 = ApiKey. Map to ProviderConfigField.
+            let field = match row_idx {
+                2 => Some(crate::tui::app::ProviderConfigField::Name),
+                4 => Some(crate::tui::app::ProviderConfigField::Model),
+                5 => Some(crate::tui::app::ProviderConfigField::BaseUrl),
+                6 => Some(crate::tui::app::ProviderConfigField::ApiKey),
+                _ => None,
+            };
+            if let Some(f) = field {
+                app.provider_config_field = f;
+            }
+        } else if in_provider_list {
+            let rect = app.provider_rect.unwrap();
+            let idx = (row as usize).saturating_sub(rect.y as usize);
+            let n = app.providers.len();
+            let add_start = if n > 0 { n + 1 } else { n };
+            let total = if n > 0 { n + 1 + 5 } else { 5 };
+            if idx < total {
+                app.provider_list_cursor = idx;
+                app.provider_list_hover = Some(idx);
+                // Determine which provider or template is clicked.
+                if idx < n {
+                    if let Some(p) = app.providers.get(idx) {
+                        app.provider_selected = Some(p.id);
+                        app.provider_creating = None;
+                        app.provider_config_field = crate::tui::app::ProviderConfigField::Name;
+                    }
+                } else {
+                    let di = idx - add_start;
+                    let types = [crate::tui::app::ProviderType::GenericOpenAI, crate::tui::app::ProviderType::GenericAnthropic, crate::tui::app::ProviderType::LMStudio, crate::tui::app::ProviderType::Ollama, crate::tui::app::ProviderType::LlamaCpp];
+                    if let Some(&pt) = types.get(di) {
+                        app.provider_creating = Some(pt);
+                        app.provider_selected = None;
+                    }
+                }
             }
         }
     }
@@ -1509,11 +1559,21 @@ fn handle_mouse_up(app: &mut App) {
 }
 
 /// Handle mouse move: update hover states.
-fn handle_mouse_moved(app: &mut App, _col: u16, row: u16, in_sidebar: bool, in_file_tree: bool, in_settings: bool) {
+#[allow(clippy::too_many_arguments)]
+fn handle_mouse_moved(
+    app: &mut App,
+    col: u16,
+    row: u16,
+    in_sidebar: bool,
+    in_file_tree: bool,
+    in_settings: bool,
+    in_provider_list: bool,
+) {
     // Clear all hover states first, then set whichever applies.
     app.sidebar_hover = None;
     app.file_hover = None;
     app.settings_hover = None;
+    app.provider_list_hover = None;
 
     if in_sidebar {
         let rect = app.sidebar_rect.unwrap();
@@ -1536,6 +1596,15 @@ fn handle_mouse_moved(app: &mut App, _col: u16, row: u16, in_sidebar: bool, in_f
         const SETTINGS_COUNT: usize = 5;
         if idx < SETTINGS_COUNT {
             app.settings_hover = Some(idx);
+        }
+    } else if app.screen == Screen::Providers && in_provider_list {
+        let rect = app.provider_rect.unwrap();
+        let idx = (row as usize).saturating_sub(rect.y as usize);
+        let n = app.providers.len();
+        let add_start = if n > 0 { n + 1 } else { n };
+        let total = if n > 0 { n + 1 + 5 } else { 5 };
+        if idx < total {
+            app.provider_list_hover = Some(idx);
         }
     }
 }
@@ -1877,7 +1946,7 @@ mod tests {
         app.pending_copy_source = Some(SelectionSource::Result);
 
         // Simulate a click outside all text areas (no rects set)
-        handle_mouse_down(&mut app, 0, 0, false, false, false, false, false, false, KeyModifiers::empty());
+        handle_mouse_down(&mut app, 0, 0, false, false, false, false, false, false, false, false, KeyModifiers::empty());
 
         assert_eq!(app.copy_defer_ticks, 0);
         assert!(app.pending_copy_source.is_none());
