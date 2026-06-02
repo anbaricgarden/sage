@@ -45,7 +45,7 @@ pub fn render(frame: &mut Frame, app: &mut App) {
         .direction(Direction::Vertical)
         .constraints([
             Constraint::Length(1), // top bar
-            Constraint::Min(0),    // content area (conversation + optional panel)
+            Constraint::Min(0),    // content area (output + optional panel)
             Constraint::Length(3), // task input
             Constraint::Length(1), // bottom bar
         ])
@@ -98,13 +98,13 @@ fn render_top_bar(frame: &mut Frame, app: &App, area: Rect) {
     frame.render_widget(pipeline, top_layout[1]);
 }
 
-// ── Content Area (conversation + optional panel overlay) ──
+// ── Content Area (output + optional panel overlay) ──
 
 fn render_content_area(frame: &mut Frame, app: &mut App, area: Rect) {
     match app.panel {
         Panel::None => {
             app.panel_rect = None;
-            render_conversation(frame, app, area);
+            render_output(frame, app, area);
         }
         Panel::Files => {
             let split = Layout::default()
@@ -113,7 +113,7 @@ fn render_content_area(frame: &mut Frame, app: &mut App, area: Rect) {
                 .split(area);
             app.panel_rect = Some(split[0]);
             render_files_panel(frame, app, split[0]);
-            render_conversation(frame, app, split[1]);
+            render_output(frame, app, split[1]);
         }
         Panel::Logs => {
             let split = Layout::default()
@@ -121,7 +121,7 @@ fn render_content_area(frame: &mut Frame, app: &mut App, area: Rect) {
                 .constraints([Constraint::Percentage(65), Constraint::Percentage(35)])
                 .split(area);
             app.panel_rect = Some(split[1]);
-            render_conversation(frame, app, split[0]);
+            render_output(frame, app, split[0]);
             render_logs_panel(frame, app, split[1]);
         }
         Panel::Config => {
@@ -130,7 +130,7 @@ fn render_content_area(frame: &mut Frame, app: &mut App, area: Rect) {
                 .constraints([Constraint::Percentage(65), Constraint::Percentage(35)])
                 .split(area);
             app.panel_rect = Some(split[1]);
-            render_conversation(frame, app, split[0]);
+            render_output(frame, app, split[0]);
             render_config_panel(frame, app, split[1]);
         }
         Panel::Graph => {
@@ -139,33 +139,45 @@ fn render_content_area(frame: &mut Frame, app: &mut App, area: Rect) {
                 .constraints([Constraint::Percentage(65), Constraint::Percentage(35)])
                 .split(area);
             app.panel_rect = Some(split[1]);
-            render_conversation(frame, app, split[0]);
+            render_output(frame, app, split[0]);
             render_graph_panel(frame, app, split[1]);
         }
     }
 }
 
-// ── Conversation Body ──
+// ── Output Body ──
 
-fn render_conversation(frame: &mut Frame, app: &mut App, area: Rect) {
+fn render_output(frame: &mut Frame, app: &mut App, area: Rect) {
     let inner = area.inner(Margin::new(1, 0));
     app.result_rect = Some(inner);
 
     if let Some(result) = &app.last_result {
         let result_width = inner.width;
         let visible_height = inner.height as usize;
-        let total_lines = wrap_text(result, result_width).len();
+
+        // Build combined output text (result + history).
+        let mut output_text = result.clone();
+        if !app.orchestrator.history.is_empty() {
+            output_text.push_str("\n\nHistory:\n");
+            for entry in &app.orchestrator.history {
+                output_text.push_str(&format!("  • {}\n", entry));
+            }
+        }
+
+        let total_lines = wrap_text(&output_text, result_width).len();
         app.result_scroll = app.result_scroll.min(total_lines.saturating_sub(visible_height));
 
+        // Only apply selection highlight if it falls entirely within the result portion.
         let sel = app
             .selection
             .as_ref()
-            .filter(|s| s.source == SelectionSource::Result)
+            .filter(|s| s.source == SelectionSource::Result && s.end <= result.len())
             .map(|s| (s.start, s.end));
         let flash = app.copy_flash_ticks > 0;
         let select_bg = if flash { SELECT_FLASH_BG } else { SELECT_BG };
-        let result_lines = lines_with_selection(
-            result,
+
+        let output_lines = lines_with_selection(
+            &output_text,
             result_width,
             app.result_scroll,
             visible_height,
@@ -175,12 +187,13 @@ fn render_conversation(frame: &mut Frame, app: &mut App, area: Rect) {
         );
 
         let block = Block::default()
-            .title(" Conversation ")
+            .title(" Output ")
             .title_style(Style::default().fg(ACCENT).add_modifier(Modifier::BOLD))
             .borders(Borders::BOTTOM)
             .border_style(Style::default().fg(BORDER));
-        let result_text = Paragraph::new(Text::from(result_lines)).block(block);
-        frame.render_widget(result_text, area);
+
+        let output_widget = Paragraph::new(Text::from(output_lines)).block(block);
+        frame.render_widget(output_widget, area);
 
         if total_lines > visible_height {
             let mut state = ScrollbarState::new(total_lines).position(app.result_scroll);
@@ -189,6 +202,30 @@ fn render_conversation(frame: &mut Frame, app: &mut App, area: Rect) {
                 .style(Style::default().fg(TEXT_MUTED));
             frame.render_stateful_widget(sb, area, &mut state);
         }
+    } else if app.running {
+        let spinner = app.spinner();
+        let state_label = format!("{} Running — State: {:?}", spinner, app.orchestrator.state);
+        let running_hint = Paragraph::new(Text::from(vec![
+            Line::from(Span::styled(state_label, Style::default().fg(ACCENT).add_modifier(Modifier::BOLD))),
+            Line::from(Span::styled("", Style::default())),
+            Line::from(Span::styled(
+                "The multi-agent pipeline is working on your task.",
+                Style::default().fg(TEXT_MUTED),
+            )),
+            Line::from(Span::styled(
+                "Open the Logs panel (Ctrl+L) to see live progress.",
+                Style::default().fg(TEXT_MUTED),
+            )),
+        ]))
+        .alignment(Alignment::Center)
+        .block(
+            Block::default()
+                .title(" Output ")
+                .title_style(Style::default().fg(ACCENT).add_modifier(Modifier::BOLD))
+                .borders(Borders::BOTTOM)
+                .border_style(Style::default().fg(BORDER)),
+        );
+        frame.render_widget(running_hint, area);
     } else {
         let hint = Paragraph::new(Text::from(vec![
             Line::from(vec![
@@ -215,6 +252,8 @@ fn render_conversation(frame: &mut Frame, app: &mut App, area: Rect) {
         .alignment(Alignment::Center)
         .block(
             Block::default()
+                .title(" Output ")
+                .title_style(Style::default().fg(ACCENT).add_modifier(Modifier::BOLD))
                 .borders(Borders::BOTTOM)
                 .border_style(Style::default().fg(BORDER)),
         );

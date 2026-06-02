@@ -305,7 +305,7 @@ fn handle_key(app: &mut App, code: KeyCode, modifiers: KeyModifiers) -> bool {
             if app.input_focused {
                 handle_task_keys(app, code, modifiers);
             } else {
-                handle_conversation_keys(app, code, modifiers);
+                handle_output_keys(app, code, modifiers);
             }
         }
         Panel::Files => handle_file_keys(app, code, modifiers),
@@ -317,7 +317,7 @@ fn handle_key(app: &mut App, code: KeyCode, modifiers: KeyModifiers) -> bool {
     true
 }
 
-fn handle_conversation_keys(app: &mut App, code: KeyCode, modifiers: KeyModifiers) {
+fn handle_output_keys(app: &mut App, code: KeyCode, modifiers: KeyModifiers) {
     let ctrl = modifiers.contains(KeyModifiers::CONTROL);
     match code {
         KeyCode::Up | KeyCode::Char('k') if !ctrl => {
