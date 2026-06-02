@@ -28,39 +28,25 @@ pub struct TextSelection {
     pub end: usize,
 }
 
-/// Which screen is currently visible.
+/// Which panel (if any) is overlaid on the workspace.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Screen {
-    Dashboard,
-    Task,
+pub enum Panel {
+    None,
     Files,
     Logs,
+    Config,
     Graph,
-    Settings,
-    Providers,
-}impl Screen {
+}
+
+impl Panel {
     pub fn title(&self) -> &'static str {
         match self {
-            Screen::Dashboard => "Dashboard",
-            Screen::Task => "Task",
-            Screen::Files => "Files",
-            Screen::Logs => "Logs",
-            Screen::Graph => "Graph",
-            Screen::Settings => "Settings",
-            Screen::Providers => "Providers",
+            Panel::None => "Workspace",
+            Panel::Files => "Files",
+            Panel::Logs => "Logs",
+            Panel::Config => "Config",
+            Panel::Graph => "Graph",
         }
-    }
-
-    pub fn all() -> &'static [Screen] {
-        &[
-            Screen::Dashboard,
-            Screen::Task,
-            Screen::Files,
-            Screen::Logs,
-            Screen::Graph,
-            Screen::Settings,
-            Screen::Providers,
-        ]
     }
 }
 
@@ -81,10 +67,17 @@ pub enum LogLevel {
     Error,
 }
 
+/// Which sub-tab is active inside the Config panel.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ConfigTab {
+    Settings,
+    Providers,
+}
+
 /// Central application state for the TUI.
 pub struct App {
-    /// Current screen.
-    pub screen: Screen,
+    /// Current overlay panel (None = workspace visible).
+    pub panel: Panel,
     /// The orchestrator driving the multi-agent pipeline.
     pub orchestrator: Orchestrator,
     /// The code graph for context retrieval.
@@ -93,10 +86,10 @@ pub struct App {
     pub logs: VecDeque<LogEntry>,
     /// Max log entries to retain.
     pub max_logs: usize,
-    /// Task input buffer (for the Task screen).
+    /// Task input buffer.
     pub task_input: String,
-    /// Whether the task input is focused.
-    pub task_input_focused: bool,
+    /// Whether the task input is focused (true at startup).
+    pub input_focused: bool,
     /// Scroll offset for the log viewer.
     pub log_scroll: usize,
     /// Selected file in the file tree.
@@ -117,23 +110,23 @@ pub struct App {
     pub status_message: Option<(String, StatusKind)>,
     /// Animation frame counter for spinner.
     pub spinner_frame: usize,
-    /// Hit-test rects from last render (for mouse clicks).
-    pub sidebar_rect: Option<Rect>,
-    pub file_tree_rect: Option<Rect>,
+    // ── Workspace layout rects ──
     pub task_input_rect: Option<Rect>,
-    pub log_area_rect: Option<Rect>,
+    pub result_rect: Option<Rect>,
     // ── File tree ──
     pub expanded_dirs: HashSet<String>,
     pub file_filter: String,
     pub file_filter_focused: bool,
     pub file_filter_cursor: usize,
     pub file_filter_rect: Option<Rect>,
-    // ── Settings ──
+    pub file_tree_rect: Option<Rect>,
+    pub file_content_rect: Option<Rect>,
+    pub file_content_scroll: usize,
+    pub file_hover: Option<usize>,
+    // ── Config panel ──
+    pub config_tab: ConfigTab,
     pub settings_cursor: usize,
     pub settings_hover: Option<usize>,
-    pub settings_rect: Option<Rect>,
-    pub sidebar_hover: Option<usize>,
-    pub file_hover: Option<usize>,
     pub animation_speed: AnimationSpeed,
     // ── Providers ──
     pub providers: Vec<ProviderEntry>,
@@ -142,11 +135,11 @@ pub struct App {
     pub provider_detail_view: Option<u64>,
     /// Which template is being created (List state when None).
     pub provider_create_view: Option<ProviderType>,
-    /// Cursor for cycling through config fields in detail/create view (0=Name,1=Type,2=Model,3=BaseUrl,4=ApiKey,5=Activate).
+    /// Cursor for cycling through config fields in detail/create view.
     pub provider_detail_cursor: usize,
-    /// Field currently being edited (Some(index) = edit mode on that field, None = browse mode).
+    /// Field currently being edited.
     pub editing_field: Option<usize>,
-    /// Create-view in-progress form values (used until save).
+    /// Create-view in-progress form values.
     pub provider_create_name: String,
     pub provider_create_model: String,
     pub provider_create_base_url: String,
@@ -154,18 +147,16 @@ pub struct App {
     pub provider_confirm_delete: Option<u64>,
     pub provider_list_cursor: usize,
     pub provider_list_hover: Option<usize>,
-    pub provider_rect: Option<Rect>,
     pub next_provider_id: u64,
     // ── Text selection ──
     pub selection: Option<TextSelection>,
     pub copy_flash_ticks: u8,
-    pub result_rect: Option<Rect>,
-    pub file_content_rect: Option<Rect>,
     pub result_scroll: usize,
-    pub file_content_scroll: usize,
     pub mouse_enabled: bool,
     pub log_filter: LogFilter,
     pub theme: Theme,
+    // ── Panel overlay rect ──
+    pub panel_rect: Option<Rect>,
     // ── Click tracking for double-/triple-click ──
     pub last_click_time: Option<Instant>,
     pub last_click_pos: (u16, u16),
@@ -215,37 +206,37 @@ impl Default for App {
 impl App {
     pub fn new() -> Self {
         let mut app = Self {
-            screen: Screen::Dashboard,
+            panel: Panel::None,
             orchestrator: Orchestrator::new(),
             code_graph: CodeGraph::new(),
             logs: VecDeque::new(),
             max_logs: 1000,
             task_input: String::new(),
             task_cursor: 0,
-            task_input_focused: false,
+            input_focused: true,
             task_scroll: 0,
+            config_tab: ConfigTab::Settings,
             log_scroll: 0,
             selected_file: None,
-            file_scroll: 0,
             running: false,
             last_result: None,
             should_quit: false,
             status_message: None,
             spinner_frame: 0,
-            sidebar_rect: None,
-            file_tree_rect: None,
             task_input_rect: None,
-            log_area_rect: None,
+            result_rect: None,
             expanded_dirs: HashSet::new(),
             file_filter: String::new(),
             file_filter_focused: false,
             file_filter_cursor: 0,
             file_filter_rect: None,
+            file_tree_rect: None,
+            file_content_rect: None,
+            file_scroll: 0,
+            file_content_scroll: 0,
+            file_hover: None,
             settings_cursor: 0,
             settings_hover: None,
-            settings_rect: None,
-            sidebar_hover: None,
-            file_hover: None,
             animation_speed: AnimationSpeed::Normal,
             providers: Vec::new(),
             active_provider: None,
@@ -260,14 +251,10 @@ impl App {
             provider_confirm_delete: None,
             provider_list_cursor: 0,
             provider_list_hover: None,
-            provider_rect: None,
             next_provider_id: 0,
             selection: None,
             copy_flash_ticks: 0,
-            result_rect: None,
-            file_content_rect: None,
             result_scroll: 0,
-            file_content_scroll: 0,
             mouse_enabled: true,
             log_filter: LogFilter::All,
             theme: Theme::Sage,
@@ -277,6 +264,7 @@ impl App {
             copy_defer_ticks: 0,
             pending_copy_source: None,
             copy_defer_duration: 3,
+            panel_rect: None,
         };
         SettingsData::load().apply_to_app(&mut app);
 
@@ -292,18 +280,18 @@ impl App {
         app
     }
 
-    /// Switch to the next screen in the sidebar.
-    pub fn next_screen(&mut self) {
-        let all = Screen::all();
-        let idx = all.iter().position(|s| *s == self.screen).unwrap_or(0);
-        self.screen = all[(idx + 1) % all.len()];
+    /// Toggle the given panel (open if closed, close if open).
+    pub fn toggle_panel(&mut self, panel: Panel) {
+        if self.panel == panel {
+            self.panel = Panel::None;
+        } else {
+            self.panel = panel;
+        }
     }
 
-    /// Switch to the previous screen in the sidebar.
-    pub fn prev_screen(&mut self) {
-        let all = Screen::all();
-        let idx = all.iter().position(|s| *s == self.screen).unwrap_or(0);
-        self.screen = all[(idx + all.len() - 1) % all.len()];
+    /// Close any open panel.
+    pub fn close_panel(&mut self) {
+        self.panel = Panel::None;
     }
 
     /// Push a log entry.
@@ -487,8 +475,6 @@ impl App {
         self.log("User", LogLevel::Info, &format!("Task: {}", task));
         self.set_status("Running task...", StatusKind::Info);
 
-        // In a real async TUI this would be spawned; for now we block briefly
-        // and then update state. We run the orchestrator synchronously.
         match self.orchestrator.run_task(&task, &self.code_graph) {
             Ok(state) => {
                 let msg = format!("Task completed: {:?}", state);
@@ -543,7 +529,7 @@ impl App {
         self.log("System", LogLevel::Info, "Ingested demo workspace (5 files)");
     }
 
-    /// Return agent statuses for the dashboard.
+    /// Return agent statuses for the pipeline strip.
     pub fn agent_statuses(&self) -> Vec<(&'static str, &'static str, bool)> {
         vec![
             (
@@ -675,26 +661,6 @@ impl ProviderEntry {
                 Some(self.api_key.clone())
             },
             timeout_secs: 120,
-        }
-    }
-}
-
-/// Which field is focused in the provider config panel.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ProviderConfigField {
-    Name,
-    Model,
-    BaseUrl,
-    ApiKey,
-}
-
-impl ProviderConfigField {
-    pub fn label(&self) -> &'static str {
-        match self {
-            ProviderConfigField::Name => "Name",
-            ProviderConfigField::Model => "Model",
-            ProviderConfigField::BaseUrl => "Base URL",
-            ProviderConfigField::ApiKey => "API Key",
         }
     }
 }

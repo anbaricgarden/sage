@@ -48,7 +48,7 @@ pub fn run_tui() -> io::Result<()> {
     app.log(
         "System",
         crate::tui::app::LogLevel::Info,
-        "sage TUI started. Press 1-6 or Tab to navigate, Ctrl+C to quit.",
+        "sage TUI started. Ctrl+F Files | Ctrl+L Logs | Ctrl+, Config | Ctrl+G Graph | Ctrl+C Quit",
     );
 
     let res = run_loop(&mut terminal, &mut app);

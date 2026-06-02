@@ -3,7 +3,7 @@ use std::time::{Duration, Instant};
 
 use crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers, MouseEventKind};
 
-use super::app::{App, ProviderType, Screen, SelectionSource, TextSelection};
+use super::app::{App, ConfigTab, Panel, ProviderType, SelectionSource, TextSelection};
 use super::file_tree::build_visible_tree;
 
 // ── Text wrapping & cursor utilities ──
@@ -288,43 +288,104 @@ fn handle_key(app: &mut App, code: KeyCode, modifiers: KeyModifiers) -> bool {
         return false;
     }
 
-    // Tab / BackTab always navigate between screens.
-    match code {
-        KeyCode::Tab => { app.next_screen(); return true; }
-        KeyCode::BackTab => { app.prev_screen(); return true; }
-        _ => {}
-    }
-
-    // Digits 1-5 navigate unless the task input is focused (so users can type numbers).
-    let consumed = if app.screen == Screen::Task && app.task_input_focused {
-        false
-    } else {
+    // Global panel toggles.
+    if modifiers.contains(KeyModifiers::CONTROL) {
         match code {
-            KeyCode::Char('1') => { app.screen = Screen::Dashboard; true }
-            KeyCode::Char('2') => { app.screen = Screen::Task; true }
-            KeyCode::Char('3') => { app.screen = Screen::Files; true }
-            KeyCode::Char('4') => { app.screen = Screen::Logs; true }
-            KeyCode::Char('5') => { app.screen = Screen::Graph; true }
-            KeyCode::Char('6') => { app.screen = Screen::Settings; true }
-            KeyCode::Char('7') => { app.screen = Screen::Providers; true }
-            _ => false,
+            KeyCode::Char('f') => { app.toggle_panel(Panel::Files); return true; }
+            KeyCode::Char('l') => { app.toggle_panel(Panel::Logs); return true; }
+            KeyCode::Char(',') => { app.toggle_panel(Panel::Config); return true; }
+            KeyCode::Char('g') => { app.toggle_panel(Panel::Graph); return true; }
+            _ => {}
         }
-    };
-    if consumed {
-        return true;
     }
 
-    // Screen-specific input.
-    match app.screen {
-        Screen::Task => handle_task_keys(app, code, modifiers),
-        Screen::Logs => handle_log_keys(app, code),
-        Screen::Files => handle_file_keys(app, code, modifiers),
-        Screen::Settings => handle_settings_keys(app, code),
-        Screen::Providers => handle_providers_keys(app, code),
-        _ => {}
+    // Panel-specific or workspace input.
+    match app.panel {
+        Panel::None => {
+            if app.input_focused {
+                handle_task_keys(app, code, modifiers);
+            } else {
+                handle_conversation_keys(app, code, modifiers);
+            }
+        }
+        Panel::Files => handle_file_keys(app, code, modifiers),
+        Panel::Logs => handle_log_keys(app, code),
+        Panel::Config => handle_config_keys(app, code, modifiers),
+        Panel::Graph => handle_graph_keys(app, code),
     }
 
     true
+}
+
+fn handle_conversation_keys(app: &mut App, code: KeyCode, modifiers: KeyModifiers) {
+    let ctrl = modifiers.contains(KeyModifiers::CONTROL);
+    match code {
+        KeyCode::Up | KeyCode::Char('k') if !ctrl => {
+            app.result_scroll = app.result_scroll.saturating_sub(3);
+        }
+        KeyCode::Down | KeyCode::Char('j') if !ctrl => {
+            if let Some(result) = &app.last_result {
+                let total = wrap_text(result, app.result_rect.map(|r| r.width).unwrap_or(40)).len();
+                app.result_scroll = (app.result_scroll + 3).min(total.saturating_sub(1));
+            }
+        }
+        KeyCode::PageUp => {
+            app.result_scroll = app.result_scroll.saturating_sub(10);
+        }
+        KeyCode::PageDown => {
+            if let Some(result) = &app.last_result {
+                let total = wrap_text(result, app.result_rect.map(|r| r.width).unwrap_or(40)).len();
+                app.result_scroll = (app.result_scroll + 10).min(total.saturating_sub(1));
+            }
+        }
+        KeyCode::Home => app.result_scroll = 0,
+        KeyCode::End => {
+            if let Some(result) = &app.last_result {
+                let total = wrap_text(result, app.result_rect.map(|r| r.width).unwrap_or(40)).len();
+                app.result_scroll = total.saturating_sub(1);
+            }
+        }
+        KeyCode::Char('i') if !ctrl => {
+            app.input_focused = true;
+        }
+        KeyCode::Esc => {
+            app.input_focused = true;
+        }
+        _ => {}
+    }
+}
+
+fn handle_config_keys(app: &mut App, code: KeyCode, modifiers: KeyModifiers) {
+    // If a provider detail/create view is open, Esc exits it first.
+    if code == KeyCode::Esc {
+        if app.provider_detail_view.is_some() || app.provider_create_view.is_some() {
+            app.exit_provider_view();
+            return;
+        }
+        app.close_panel();
+        return;
+    }
+
+    // Tab switches between Settings and Providers tabs.
+    if code == KeyCode::Tab && !modifiers.contains(KeyModifiers::SHIFT) {
+        app.config_tab = match app.config_tab {
+            ConfigTab::Settings => ConfigTab::Providers,
+            ConfigTab::Providers => ConfigTab::Settings,
+        };
+        return;
+    }
+
+    match app.config_tab {
+        ConfigTab::Settings => handle_settings_keys(app, code),
+        ConfigTab::Providers => handle_providers_keys(app, code),
+    }
+}
+
+fn handle_graph_keys(app: &mut App, code: KeyCode) {
+    match code {
+        KeyCode::Esc => app.close_panel(),
+        _ => {}
+    }
 }
 
 fn handle_task_keys(app: &mut App, code: KeyCode, modifiers: KeyModifiers) {
@@ -343,7 +404,7 @@ fn handle_task_keys(app: &mut App, code: KeyCode, modifiers: KeyModifiers) {
                 .unwrap_or_else(|| app.task_cursor.min(app.task_input.len()));
             app.task_input.insert(pos, c);
             app.task_cursor = (pos + c.len_utf8()).min(app.task_input.len());
-            app.task_input_focused = true;
+            app.input_focused = true;
             auto_scroll(app, width);
         }
 
@@ -355,7 +416,7 @@ fn handle_task_keys(app: &mut App, code: KeyCode, modifiers: KeyModifiers) {
                 end: app.task_input.len(),
             });
             app.task_cursor = app.task_input.len();
-            app.task_input_focused = true;
+            app.input_focused = true;
             auto_scroll(app, width);
         }
 
@@ -369,7 +430,7 @@ fn handle_task_keys(app: &mut App, code: KeyCode, modifiers: KeyModifiers) {
                 app.task_input.replace_range(prev..pos, "");
                 app.task_cursor = prev;
             }
-            app.task_input_focused = true;
+            app.input_focused = true;
             auto_scroll(app, width);
         }
         KeyCode::Char('w') if ctrl => {
@@ -382,7 +443,7 @@ fn handle_task_keys(app: &mut App, code: KeyCode, modifiers: KeyModifiers) {
                 app.task_input.replace_range(prev..pos, "");
                 app.task_cursor = prev;
             }
-            app.task_input_focused = true;
+            app.input_focused = true;
             auto_scroll(app, width);
         }
         KeyCode::Backspace => {
@@ -393,7 +454,7 @@ fn handle_task_keys(app: &mut App, code: KeyCode, modifiers: KeyModifiers) {
                 app.task_input.replace_range(prev..app.task_cursor, "");
                 app.task_cursor = prev;
             }
-            app.task_input_focused = true;
+            app.input_focused = true;
             auto_scroll(app, width);
         }
 
@@ -406,7 +467,7 @@ fn handle_task_keys(app: &mut App, code: KeyCode, modifiers: KeyModifiers) {
                 let next = next_word_boundary(&app.task_input, pos);
                 app.task_input.replace_range(pos..next, "");
             }
-            app.task_input_focused = true;
+            app.input_focused = true;
             auto_scroll(app, width);
         }
         KeyCode::Delete => {
@@ -416,7 +477,7 @@ fn handle_task_keys(app: &mut App, code: KeyCode, modifiers: KeyModifiers) {
                 let next = next_char_boundary(&app.task_input, app.task_cursor);
                 app.task_input.replace_range(app.task_cursor..next, "");
             }
-            app.task_input_focused = true;
+            app.input_focused = true;
             auto_scroll(app, width);
         }
 
@@ -425,7 +486,7 @@ fn handle_task_keys(app: &mut App, code: KeyCode, modifiers: KeyModifiers) {
             let new_cursor = prev_word_boundary(&app.task_input, app.task_cursor);
             extend_task_selection(app, new_cursor);
             app.task_cursor = new_cursor;
-            app.task_input_focused = true;
+            app.input_focused = true;
             auto_scroll(app, width);
         }
         KeyCode::Left if ctrl => {
@@ -436,14 +497,14 @@ fn handle_task_keys(app: &mut App, code: KeyCode, modifiers: KeyModifiers) {
                 app.task_cursor = prev_word_boundary(&app.task_input, app.task_cursor);
             }
             app.copy_flash_ticks = 0;
-            app.task_input_focused = true;
+            app.input_focused = true;
             auto_scroll(app, width);
         }
         KeyCode::Left if shift => {
             let new_cursor = prev_char_boundary(&app.task_input, app.task_cursor);
             extend_task_selection(app, new_cursor);
             app.task_cursor = new_cursor;
-            app.task_input_focused = true;
+            app.input_focused = true;
             auto_scroll(app, width);
         }
         KeyCode::Left => {
@@ -454,7 +515,7 @@ fn handle_task_keys(app: &mut App, code: KeyCode, modifiers: KeyModifiers) {
                 app.task_cursor = prev_char_boundary(&app.task_input, app.task_cursor);
             }
             app.copy_flash_ticks = 0;
-            app.task_input_focused = true;
+            app.input_focused = true;
             auto_scroll(app, width);
         }
 
@@ -463,7 +524,7 @@ fn handle_task_keys(app: &mut App, code: KeyCode, modifiers: KeyModifiers) {
             let new_cursor = next_word_boundary(&app.task_input, app.task_cursor);
             extend_task_selection(app, new_cursor);
             app.task_cursor = new_cursor;
-            app.task_input_focused = true;
+            app.input_focused = true;
             auto_scroll(app, width);
         }
         KeyCode::Right if ctrl => {
@@ -474,14 +535,14 @@ fn handle_task_keys(app: &mut App, code: KeyCode, modifiers: KeyModifiers) {
                 app.task_cursor = next_word_boundary(&app.task_input, app.task_cursor);
             }
             app.copy_flash_ticks = 0;
-            app.task_input_focused = true;
+            app.input_focused = true;
             auto_scroll(app, width);
         }
         KeyCode::Right if shift => {
             let new_cursor = next_char_boundary(&app.task_input, app.task_cursor);
             extend_task_selection(app, new_cursor);
             app.task_cursor = new_cursor;
-            app.task_input_focused = true;
+            app.input_focused = true;
             auto_scroll(app, width);
         }
         KeyCode::Right => {
@@ -492,7 +553,7 @@ fn handle_task_keys(app: &mut App, code: KeyCode, modifiers: KeyModifiers) {
                 app.task_cursor = next_char_boundary(&app.task_input, app.task_cursor);
             }
             app.copy_flash_ticks = 0;
-            app.task_input_focused = true;
+            app.input_focused = true;
             auto_scroll(app, width);
         }
 
@@ -506,7 +567,7 @@ fn handle_task_keys(app: &mut App, code: KeyCode, modifiers: KeyModifiers) {
             };
             extend_task_selection(app, new_cursor);
             app.task_cursor = new_cursor;
-            app.task_input_focused = true;
+            app.input_focused = true;
             auto_scroll(app, width);
         }
         KeyCode::Up => {
@@ -518,7 +579,7 @@ fn handle_task_keys(app: &mut App, code: KeyCode, modifiers: KeyModifiers) {
             } else {
                 app.task_cursor = 0;
             }
-            app.task_input_focused = true;
+            app.input_focused = true;
             auto_scroll(app, width);
         }
 
@@ -533,7 +594,7 @@ fn handle_task_keys(app: &mut App, code: KeyCode, modifiers: KeyModifiers) {
             };
             extend_task_selection(app, new_cursor);
             app.task_cursor = new_cursor;
-            app.task_input_focused = true;
+            app.input_focused = true;
             auto_scroll(app, width);
         }
         KeyCode::Down => {
@@ -546,7 +607,7 @@ fn handle_task_keys(app: &mut App, code: KeyCode, modifiers: KeyModifiers) {
             } else {
                 app.task_cursor = app.task_input.len();
             }
-            app.task_input_focused = true;
+            app.input_focused = true;
             auto_scroll(app, width);
         }
 
@@ -557,7 +618,7 @@ fn handle_task_keys(app: &mut App, code: KeyCode, modifiers: KeyModifiers) {
             let new_cursor = lines.get(row).map(|(s, _)| *s).unwrap_or(0);
             extend_task_selection(app, new_cursor);
             app.task_cursor = new_cursor;
-            app.task_input_focused = true;
+            app.input_focused = true;
             auto_scroll(app, width);
         }
         KeyCode::Home => {
@@ -568,7 +629,7 @@ fn handle_task_keys(app: &mut App, code: KeyCode, modifiers: KeyModifiers) {
             if let Some((s, _)) = lines.get(row) {
                 app.task_cursor = *s;
             }
-            app.task_input_focused = true;
+            app.input_focused = true;
             auto_scroll(app, width);
         }
 
@@ -579,7 +640,7 @@ fn handle_task_keys(app: &mut App, code: KeyCode, modifiers: KeyModifiers) {
             let new_cursor = lines.get(row).map(|(_, e)| *e).unwrap_or(app.task_input.len());
             extend_task_selection(app, new_cursor);
             app.task_cursor = new_cursor;
-            app.task_input_focused = true;
+            app.input_focused = true;
             auto_scroll(app, width);
         }
         KeyCode::End => {
@@ -590,7 +651,7 @@ fn handle_task_keys(app: &mut App, code: KeyCode, modifiers: KeyModifiers) {
             if let Some((_, e)) = lines.get(row) {
                 app.task_cursor = *e;
             }
-            app.task_input_focused = true;
+            app.input_focused = true;
             auto_scroll(app, width);
         }
 
@@ -600,7 +661,7 @@ fn handle_task_keys(app: &mut App, code: KeyCode, modifiers: KeyModifiers) {
                 .unwrap_or_else(|| app.task_cursor.min(app.task_input.len()));
             app.task_input.insert(pos, '\n');
             app.task_cursor = pos + 1;
-            app.task_input_focused = true;
+            app.input_focused = true;
             auto_scroll(app, width);
         }
 
@@ -625,7 +686,7 @@ fn handle_task_keys(app: &mut App, code: KeyCode, modifiers: KeyModifiers) {
             }
         }
         KeyCode::Esc => {
-            app.task_input_focused = false;
+            app.input_focused = false;
             app.selection = None;
             app.copy_flash_ticks = 0;
         }
@@ -1194,17 +1255,15 @@ fn contains(rect: ratatui::layout::Rect, col: u16, row: u16) -> bool {
 }
 
 fn handle_mouse(app: &mut App, kind: MouseEventKind, col: u16, row: u16, modifiers: KeyModifiers) {
-    let in_sidebar = app.sidebar_rect.is_some_and(|r| contains(r, col, row));
     let in_file_tree = app.file_tree_rect.is_some_and(|r| contains(r, col, row));
     let in_task_input = app.task_input_rect.is_some_and(|r| contains(r, col, row));
-    let in_settings = app.settings_rect.is_some_and(|r| contains(r, col, row));
     let in_result = app.result_rect.is_some_and(|r| contains(r, col, row));
     let in_file_content = app.file_content_rect.is_some_and(|r| contains(r, col, row));
-    let in_provider_list = app.provider_rect.is_some_and(|r| contains(r, col, row));
+    let in_panel = app.panel_rect.is_some_and(|r| contains(r, col, row));
 
     match kind {
         MouseEventKind::Down(_) => {
-            handle_mouse_down(app, col, row, in_sidebar, in_file_tree, in_task_input, in_settings, in_result, in_file_content, in_provider_list, modifiers);
+            handle_mouse_down(app, col, row, in_file_tree, in_task_input, in_result, in_file_content, in_panel, modifiers);
         }
         MouseEventKind::Drag(_) => {
             handle_mouse_drag(app, col, row);
@@ -1213,7 +1272,7 @@ fn handle_mouse(app: &mut App, kind: MouseEventKind, col: u16, row: u16, modifie
             handle_mouse_up(app);
         }
         MouseEventKind::Moved => {
-            handle_mouse_moved(app, col, row, in_sidebar, in_file_tree, in_settings, in_provider_list);
+            handle_mouse_moved(app, col, row, in_file_tree, in_panel);
         }
         MouseEventKind::ScrollUp => {
             handle_mouse_scroll(app, in_file_tree, in_file_content, in_result, -1);
@@ -1231,13 +1290,11 @@ fn handle_mouse_down(
     app: &mut App,
     col: u16,
     row: u16,
-    in_sidebar: bool,
     in_file_tree: bool,
     in_task_input: bool,
-    in_settings: bool,
     in_result: bool,
     in_file_content: bool,
-    in_provider_list: bool,
+    in_panel: bool,
     modifiers: KeyModifiers,
 ) {
     // Cancel any pending deferred copy when the user clicks again.
@@ -1256,15 +1313,8 @@ fn handle_mouse_down(
         app.click_count = 0;
     }
 
-    // Existing click handlers (sidebar, file tree, settings, filter, task input cursor).
-    if in_sidebar {
-        let rect = app.sidebar_rect.unwrap();
-        let idx = (row as usize).saturating_sub(rect.y as usize);
-        let screens = Screen::all();
-        if idx < screens.len() {
-            app.screen = screens[idx];
-        }
-    } else if app.screen == Screen::Files && in_file_tree {
+    // Existing click handlers (file tree, panel, task input cursor).
+    if app.panel == Panel::Files && in_file_tree {
         let rect = app.file_tree_rect.unwrap();
         let idx = (row as usize).saturating_sub(rect.y as usize);
         let paths: Vec<String> = app.orchestrator.file_contents.keys().cloned().collect();
@@ -1282,32 +1332,12 @@ fn handle_mouse_down(
                 app.selected_file = Some(entry.path.clone());
             }
         }
-    } else if app.screen == Screen::Settings && in_settings {
-        let rect = app.settings_rect.unwrap();
+    } else if app.panel == Panel::Config && in_panel {
+        let rect = app.panel_rect.unwrap();
         let idx = (row as usize).saturating_sub(rect.y as usize);
         const SETTINGS_COUNT: usize = 5;
-        if idx < SETTINGS_COUNT {
-            app.settings_cursor = idx;
-            app.settings_hover = Some(idx);
-            match idx {
-                0 => app.toggle_animation_speed(),
-                1 => {
-                    app.mouse_enabled = !app.mouse_enabled;
-                    app.save_settings();
-                }
-                2 => app.toggle_log_filter(),
-                3 => app.toggle_theme(),
-                4 => app.toggle_copy_defer_duration(),
-                _ => {}
-            }
-        }
-    } else if app.screen == Screen::Providers && in_provider_list {
-        let rect = app.provider_rect.unwrap();
-        let idx = (row as usize).saturating_sub(rect.y as usize);
-        let n = app.providers.len();
-        let total = if n > 0 { n + 1 + 5 } else { 5 };
 
-        // In detail/create view: mouse click enters edit mode on the clicked field.
+        // In provider detail/create view: mouse click enters edit mode on the clicked field.
         if app.provider_detail_view.is_some() || app.provider_create_view.is_some() {
             // Row 0 = header/status, row 1 = blank, rows 2..7 = fields (Name/Type/Model/BaseUrl/ApiKey/Activate).
             let field_row = (row as usize).saturating_sub(rect.y as usize);
@@ -1322,10 +1352,32 @@ fn handle_mouse_down(
             return;
         }
 
-        // In list view: click navigates to the clicked row.
-        if idx < total {
-            app.provider_list_cursor = idx;
-            app.provider_list_hover = Some(idx);
+        // Settings tab hover/click.
+        if app.config_tab == ConfigTab::Settings && idx < SETTINGS_COUNT {
+            app.settings_cursor = idx;
+            app.settings_hover = Some(idx);
+            match idx {
+                0 => app.toggle_animation_speed(),
+                1 => {
+                    app.mouse_enabled = !app.mouse_enabled;
+                    app.save_settings();
+                }
+                2 => app.toggle_log_filter(),
+                3 => app.toggle_theme(),
+                4 => app.toggle_copy_defer_duration(),
+                _ => {}
+            }
+            return;
+        }
+
+        // Providers tab list view hover/click.
+        if app.config_tab == ConfigTab::Providers {
+            let n = app.providers.len();
+            let total = if n > 0 { n + 1 + 5 } else { 5 };
+            if idx < total {
+                app.provider_list_cursor = idx;
+                app.provider_list_hover = Some(idx);
+            }
         }
     }
 }
@@ -1379,7 +1431,7 @@ fn start_text_selection(
     modifiers: KeyModifiers,
 ) -> bool {
     let shift = modifiers.contains(KeyModifiers::SHIFT);
-    if app.screen == Screen::Task && in_task_input {
+    if app.panel == Panel::None && in_task_input {
         let rect = app.task_input_rect.unwrap();
         let idx = byte_index_at_click(&app.task_input, rect, app.task_scroll, col, row);
         let (start, end) = selection_bounds_for_click(
@@ -1391,12 +1443,12 @@ fn start_text_selection(
             end,
         });
         app.task_cursor = end;
-        app.task_input_focused = true;
+        app.input_focused = true;
         app.copy_flash_ticks = 0;
         return true;
     }
 
-    if app.screen == Screen::Task && in_result && let Some(result) = &app.last_result {
+    if app.panel == Panel::None && in_result && let Some(result) = &app.last_result {
         let rect = app.result_rect.unwrap();
         let idx = byte_index_at_click(result, rect, app.result_scroll, col, row);
         let (start, end) = selection_bounds_for_click(
@@ -1411,7 +1463,7 @@ fn start_text_selection(
         return true;
     }
 
-    if app.screen == Screen::Files && in_file_content && let Some(content) = app.selected_file.as_ref().and_then(|f| app.orchestrator.file_contents.get(f)) {
+    if app.panel == Panel::Files && in_file_content && let Some(content) = app.selected_file.as_ref().and_then(|f| app.orchestrator.file_contents.get(f)) {
         let rect = app.file_content_rect.unwrap();
         let idx = byte_index_at_click(content, rect, app.file_content_scroll, col, row);
         let (start, end) = selection_bounds_for_click(
@@ -1426,7 +1478,7 @@ fn start_text_selection(
         return true;
     }
 
-    if app.screen == Screen::Files && app.file_filter_rect.is_some_and(|r| contains(r, col, row)) {
+    if app.panel == Panel::Files && app.file_filter_rect.is_some_and(|r| contains(r, col, row)) {
         let rect = app.file_filter_rect.unwrap();
         let click_col = col.saturating_sub(rect.x) as usize;
         let idx = click_col.min(app.file_filter.len());
@@ -1558,30 +1610,19 @@ fn handle_mouse_up(app: &mut App) {
 }
 
 /// Handle mouse move: update hover states.
-#[allow(clippy::too_many_arguments)]
 fn handle_mouse_moved(
     app: &mut App,
     _col: u16,
     row: u16,
-    in_sidebar: bool,
     in_file_tree: bool,
-    in_settings: bool,
-    in_provider_list: bool,
+    in_panel: bool,
 ) {
     // Clear all hover states first, then set whichever applies.
-    app.sidebar_hover = None;
     app.file_hover = None;
     app.settings_hover = None;
     app.provider_list_hover = None;
 
-    if in_sidebar {
-        let rect = app.sidebar_rect.unwrap();
-        let idx = (row as usize).saturating_sub(rect.y as usize);
-        let screens = Screen::all();
-        if idx < screens.len() {
-            app.sidebar_hover = Some(idx);
-        }
-    } else if app.screen == Screen::Files && in_file_tree {
+    if app.panel == Panel::Files && in_file_tree {
         let rect = app.file_tree_rect.unwrap();
         let idx = (row as usize).saturating_sub(rect.y as usize);
         let paths: Vec<String> = app.orchestrator.file_contents.keys().cloned().collect();
@@ -1589,20 +1630,18 @@ fn handle_mouse_moved(
         if idx < visible.len() {
             app.file_hover = Some(idx);
         }
-    } else if app.screen == Screen::Settings && in_settings {
-        let rect = app.settings_rect.unwrap();
+    } else if app.panel == Panel::Config && in_panel {
+        let rect = app.panel_rect.unwrap();
         let idx = (row as usize).saturating_sub(rect.y as usize);
         const SETTINGS_COUNT: usize = 5;
-        if idx < SETTINGS_COUNT {
+        if app.config_tab == ConfigTab::Settings && idx < SETTINGS_COUNT {
             app.settings_hover = Some(idx);
-        }
-    } else if app.screen == Screen::Providers && in_provider_list {
-        let rect = app.provider_rect.unwrap();
-        let idx = (row as usize).saturating_sub(rect.y as usize);
-        let n = app.providers.len();
-        let total = if n > 0 { n + 1 + 5 } else { 5 };
-        if idx < total {
-            app.provider_list_hover = Some(idx);
+        } else if app.config_tab == ConfigTab::Providers {
+            let n = app.providers.len();
+            let total = if n > 0 { n + 1 + 5 } else { 5 };
+            if idx < total {
+                app.provider_list_hover = Some(idx);
+            }
         }
     }
 }
@@ -1616,13 +1655,13 @@ fn handle_mouse_scroll(
     direction: i8,
 ) {
     let delta = 3usize;
-    if app.screen == Screen::Logs {
+    if app.panel == Panel::Logs {
         if direction < 0 {
             app.log_scroll = app.log_scroll.saturating_sub(delta);
         } else {
             app.log_scroll = (app.log_scroll + delta).min(app.logs.len().saturating_sub(1));
         }
-    } else if app.screen == Screen::Files && in_file_tree {
+    } else if app.panel == Panel::Files && in_file_tree {
         let paths: Vec<String> = app.orchestrator.file_contents.keys().cloned().collect();
         let visible = build_visible_tree(&paths, &app.expanded_dirs, &app.file_filter);
         if direction < 0 {
@@ -1638,7 +1677,7 @@ fn handle_mouse_scroll(
                 app.selected_file = Some(entry.path.clone());
             }
         }
-    } else if app.screen == Screen::Files && in_file_content {
+    } else if app.panel == Panel::Files && in_file_content {
         if let Some(content) = app.selected_file.as_ref().and_then(|f| app.orchestrator.file_contents.get(f)) {
             let total = wrap_text(content, app.file_content_rect.map(|r| r.width).unwrap_or(40)).len();
             if direction < 0 {
@@ -1647,7 +1686,7 @@ fn handle_mouse_scroll(
                 app.file_content_scroll = (app.file_content_scroll + delta).min(total.saturating_sub(1));
             }
         }
-    } else if app.screen == Screen::Task && in_result && let Some(result) = &app.last_result {
+    } else if app.panel == Panel::None && in_result && let Some(result) = &app.last_result {
         let total = wrap_text(result, app.result_rect.map(|r| r.width).unwrap_or(40)).len();
         if direction < 0 {
             app.result_scroll = app.result_scroll.saturating_sub(delta);
@@ -1944,7 +1983,7 @@ mod tests {
         app.pending_copy_source = Some(SelectionSource::Result);
 
         // Simulate a click outside all text areas (no rects set)
-        handle_mouse_down(&mut app, 0, 0, false, false, false, false, false, false, false, KeyModifiers::empty());
+        handle_mouse_down(&mut app, 0, 0, false, false, false, false, false, KeyModifiers::empty());
 
         assert_eq!(app.copy_defer_ticks, 0);
         assert!(app.pending_copy_source.is_none());
@@ -1959,7 +1998,8 @@ mod tests {
         let mut app = App::new();
         app.task_input = "hello world foo bar".to_string();
         app.task_input_rect = Some(ratatui::layout::Rect::new(0, 0, 40, 10));
-        app.screen = Screen::Task;
+        app.panel = Panel::None;
+        app.input_focused = true;
 
         // First click at byte 0, double-click to select "hello" (0..5)
         let modifiers = KeyModifiers::empty();
@@ -1983,7 +2023,8 @@ mod tests {
         let mut app = App::new();
         app.task_input = "hello world foo bar".to_string();
         app.task_input_rect = Some(ratatui::layout::Rect::new(0, 0, 40, 10));
-        app.screen = Screen::Task;
+        app.panel = Panel::None;
+        app.input_focused = true;
 
         // First click at byte 16, double-click to select "bar" (16..19)
         let modifiers = KeyModifiers::empty();
@@ -2004,7 +2045,8 @@ mod tests {
         let mut app = App::new();
         app.task_input = "hello world foo bar".to_string();
         app.task_input_rect = Some(ratatui::layout::Rect::new(0, 0, 40, 10));
-        app.screen = Screen::Task;
+        app.panel = Panel::None;
+        app.input_focused = true;
 
         // Single click at byte 0 creates zero-width selection (0,0)
         let modifiers = KeyModifiers::empty();
@@ -2024,7 +2066,8 @@ mod tests {
         let mut app = App::new();
         app.task_input = "hello world foo bar".to_string();
         app.task_input_rect = Some(ratatui::layout::Rect::new(0, 0, 40, 10));
-        app.screen = Screen::Task;
+        app.panel = Panel::None;
+        app.input_focused = true;
 
         // Double-click at byte 16 to select "bar" (16..19)
         let modifiers = KeyModifiers::empty();
@@ -2045,7 +2088,8 @@ mod tests {
         let mut app = App::new();
         app.task_input = "hello world foo bar".to_string();
         app.task_input_rect = Some(ratatui::layout::Rect::new(0, 0, 40, 10));
-        app.screen = Screen::Task;
+        app.panel = Panel::None;
+        app.input_focused = true;
         app.task_cursor = 6; // cursor at "world"
         app.selection = None;
 
@@ -2065,7 +2109,8 @@ mod tests {
         app.last_result = Some("result text here".to_string());
         app.task_input_rect = Some(ratatui::layout::Rect::new(0, 0, 40, 10));
         app.result_rect = Some(ratatui::layout::Rect::new(0, 0, 40, 10));
-        app.screen = Screen::Task;
+        app.panel = Panel::None;
+        app.input_focused = true;
 
         // Create selection in task input
         let modifiers = KeyModifiers::empty();
@@ -2085,7 +2130,8 @@ mod tests {
         let mut app = App::new();
         app.last_result = Some("hello world foo bar".to_string());
         app.result_rect = Some(ratatui::layout::Rect::new(0, 0, 40, 10));
-        app.screen = Screen::Task;
+        app.panel = Panel::None;
+        app.input_focused = true;
 
         // Create selection in result area (double-click at byte 0 selects "hello" 0..5)
         let modifiers = KeyModifiers::empty();
