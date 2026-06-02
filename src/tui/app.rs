@@ -102,8 +102,8 @@ pub struct App {
     pub task_scroll: usize,
     /// Whether a task is currently running.
     pub running: bool,
-    /// Last task result summary.
-    pub last_result: Option<String>,
+    /// Persistent output log (chat history).
+    pub output_log: Vec<String>,
     /// Should the app quit?
     pub should_quit: bool,
     /// Status message (transient, shown at bottom).
@@ -219,7 +219,7 @@ impl App {
             log_scroll: 0,
             selected_file: None,
             running: false,
-            last_result: None,
+            output_log: Vec::new(),
             should_quit: false,
             status_message: None,
             spinner_frame: 0,
@@ -456,6 +456,15 @@ impl App {
         }
     }
 
+    /// Return the full output text for rendering / selection.
+    pub fn output_text(&self) -> String {
+        if self.output_log.is_empty() {
+            String::new()
+        } else {
+            self.output_log.join("\n\n")
+        }
+    }
+
     /// Get the current spinner character.
     pub fn spinner(&self) -> char {
         const FRAMES: [char; 8] = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧'];
@@ -471,7 +480,7 @@ impl App {
         }
 
         self.running = true;
-        self.last_result = None;
+        self.output_log.push(format!("You: {}", task));
         self.log("User", LogLevel::Info, &format!("Task: {}", task));
         self.set_status("Running task...", StatusKind::Info);
 
@@ -479,13 +488,13 @@ impl App {
             Ok(state) => {
                 let msg = format!("Task completed: {:?}", state);
                 self.log("Orchestrator", LogLevel::Success, &msg);
-                self.last_result = Some(msg.clone());
+                self.output_log.push(format!("Sage: {}", msg));
                 self.set_status(&msg, StatusKind::Success);
             }
             Err(err) => {
                 let msg = format!("Task failed: {}", err);
                 self.log("Orchestrator", LogLevel::Error, &msg);
-                self.last_result = Some(msg.clone());
+                self.output_log.push(format!("Sage: {}", msg));
                 self.set_status(&msg, StatusKind::Error);
             }
         }

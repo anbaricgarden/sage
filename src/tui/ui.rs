@@ -151,11 +151,12 @@ fn render_output(frame: &mut Frame, app: &mut App, area: Rect) {
     let inner = area.inner(Margin::new(1, 0));
     app.result_rect = Some(inner);
 
-    if let Some(result) = &app.last_result {
+    let output_text = app.output_text();
+    if !output_text.is_empty() {
         let result_width = inner.width;
         let visible_height = inner.height as usize;
 
-        let total_lines = wrap_text(result, result_width).len();
+        let total_lines = wrap_text(&output_text, result_width).len();
         app.result_scroll = app.result_scroll.min(total_lines.saturating_sub(visible_height));
 
         let sel = app
@@ -167,7 +168,7 @@ fn render_output(frame: &mut Frame, app: &mut App, area: Rect) {
         let select_bg = if flash { SELECT_FLASH_BG } else { SELECT_BG };
 
         let output_lines = lines_with_selection(
-            result,
+            &output_text,
             result_width,
             app.result_scroll,
             visible_height,

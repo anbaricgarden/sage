@@ -122,7 +122,8 @@ pub fn tick_deferred_copy(app: &mut App) {
     let text = match source {
         SelectionSource::TaskInput => app.task_input[start..end].to_string(),
         SelectionSource::Result => {
-            app.last_result.as_ref().map(|r| r[start..end].to_string()).unwrap_or_default()
+            let output = app.output_text();
+            output.get(start..end).map(|s| s.to_string()).unwrap_or_default()
         }
         SelectionSource::FileContent => {
             app.selected_file.as_ref()
@@ -290,7 +291,8 @@ fn handle_key(app: &mut App, code: KeyCode, modifiers: KeyModifiers) -> bool {
                 let text = match sel.source {
                     SelectionSource::TaskInput => app.task_input[start..end].to_string(),
                     SelectionSource::Result => {
-                        app.last_result.as_ref().map(|r| r[start..end].to_string()).unwrap_or_default()
+                        let output = app.output_text();
+                        output.get(start..end).map(|s| s.to_string()).unwrap_or_default()
                     }
                     SelectionSource::FileContent => {
                         app.selected_file.as_ref()
@@ -368,9 +370,10 @@ fn handle_output_keys(app: &mut App, code: KeyCode, modifiers: KeyModifiers) {
         .map(|s| s.end)
         .unwrap_or(0);
 
-    if let Some(ref text) = app.last_result {
+    let text = app.output_text();
+    if !text.is_empty() {
         let width = app.result_rect.map(|r| r.width).unwrap_or(40);
-        let total_lines = wrap_text(text, width).len();
+        let total_lines = wrap_text(&text, width).len();
         let visible_height = app.result_rect.map(|r| r.height as usize).unwrap_or(1);
 
         match code {
@@ -417,9 +420,9 @@ fn handle_output_keys(app: &mut App, code: KeyCode, modifiers: KeyModifiers) {
 
             // ── Shift+Up: extend selection up one visual line ──
             KeyCode::Up | KeyCode::Char('k') if shift && !ctrl => {
-                let (row, col) = byte_index_to_visual_pos(text, sel_end, width);
+                let (row, col) = byte_index_to_visual_pos(&text, sel_end, width);
                 let new_end = if row > 0 {
-                    visual_pos_to_byte_index(text, row - 1, col, width)
+                    visual_pos_to_byte_index(&text, row - 1, col, width)
                 } else {
                     0
                 };
@@ -428,10 +431,10 @@ fn handle_output_keys(app: &mut App, code: KeyCode, modifiers: KeyModifiers) {
 
             // ── Shift+Down: extend selection down one visual line ──
             KeyCode::Down | KeyCode::Char('j') if shift && !ctrl => {
-                let lines = wrap_text(text, width);
-                let (row, col) = byte_index_to_visual_pos(text, sel_end, width);
+                let lines = wrap_text(&text, width);
+                let (row, col) = byte_index_to_visual_pos(&text, sel_end, width);
                 let new_end = if row + 1 < lines.len() {
-                    visual_pos_to_byte_index(text, row + 1, col, width)
+                    visual_pos_to_byte_index(&text, row + 1, col, width)
                 } else {
                     text.len()
                 };
@@ -440,57 +443,57 @@ fn handle_output_keys(app: &mut App, code: KeyCode, modifiers: KeyModifiers) {
 
             // ── Shift+Left: extend selection left one char ──
             KeyCode::Left if shift && !ctrl => {
-                let new_end = prev_char_boundary(text, sel_end);
+                let new_end = prev_char_boundary(&text, sel_end);
                 extend_result_selection(app, sel_end, new_end);
             }
 
             // ── Shift+Right: extend selection right one char ──
             KeyCode::Right if shift && !ctrl => {
-                let new_end = next_char_boundary(text, sel_end);
+                let new_end = next_char_boundary(&text, sel_end);
                 extend_result_selection(app, sel_end, new_end);
             }
 
             // ── Ctrl+Shift+Left: extend selection left one word ──
             KeyCode::Left if ctrl && shift => {
-                let new_end = prev_word_boundary(text, sel_end);
+                let new_end = prev_word_boundary(&text, sel_end);
                 extend_result_selection(app, sel_end, new_end);
             }
 
             // ── Ctrl+Shift+Right: extend selection right one word ──
             KeyCode::Right if ctrl && shift => {
-                let new_end = next_word_boundary(text, sel_end);
+                let new_end = next_word_boundary(&text, sel_end);
                 extend_result_selection(app, sel_end, new_end);
             }
 
             // ── Shift+Home: extend to start of visual line ──
             KeyCode::Home if shift && !ctrl => {
-                let (row, _) = byte_index_to_visual_pos(text, sel_end, width);
-                let lines = wrap_text(text, width);
+                let (row, _) = byte_index_to_visual_pos(&text, sel_end, width);
+                let lines = wrap_text(&text, width);
                 let new_end = lines.get(row).map(|(s, _)| *s).unwrap_or(0);
                 extend_result_selection(app, sel_end, new_end);
             }
 
             // ── Shift+End: extend to end of visual line ──
             KeyCode::End if shift && !ctrl => {
-                let (row, _) = byte_index_to_visual_pos(text, sel_end, width);
-                let lines = wrap_text(text, width);
+                let (row, _) = byte_index_to_visual_pos(&text, sel_end, width);
+                let lines = wrap_text(&text, width);
                 let new_end = lines.get(row).map(|(_, e)| *e).unwrap_or(text.len());
                 extend_result_selection(app, sel_end, new_end);
             }
 
             // ── Shift+PageUp: extend selection up one page ──
             KeyCode::PageUp if shift => {
-                let (row, col) = byte_index_to_visual_pos(text, sel_end, width);
+                let (row, col) = byte_index_to_visual_pos(&text, sel_end, width);
                 let target_row = row.saturating_sub(visible_height);
-                let new_end = visual_pos_to_byte_index(text, target_row, col, width);
+                let new_end = visual_pos_to_byte_index(&text, target_row, col, width);
                 extend_result_selection(app, sel_end, new_end);
             }
 
             // ── Shift+PageDown: extend selection down one page ──
             KeyCode::PageDown if shift => {
-                let (row, col) = byte_index_to_visual_pos(text, sel_end, width);
+                let (row, col) = byte_index_to_visual_pos(&text, sel_end, width);
                 let target_row = (row + visible_height).min(total_lines.saturating_sub(1));
-                let new_end = visual_pos_to_byte_index(text, target_row, col, width);
+                let new_end = visual_pos_to_byte_index(&text, target_row, col, width);
                 extend_result_selection(app, sel_end, new_end);
             }
 
@@ -845,8 +848,9 @@ fn handle_task_keys(app: &mut App, code: KeyCode, modifiers: KeyModifiers) {
             app.result_scroll = app.result_scroll.saturating_sub(10);
         }
         KeyCode::PageDown => {
-            if let Some(result) = &app.last_result {
-                let total = wrap_text(result, app.result_rect.map(|r| r.width).unwrap_or(40)).len();
+            let result_text = app.output_text();
+            if !result_text.is_empty() {
+                let total = wrap_text(&result_text, app.result_rect.map(|r| r.width).unwrap_or(40)).len();
                 app.result_scroll = (app.result_scroll + 10).min(total.saturating_sub(1));
             }
         }
@@ -1613,19 +1617,22 @@ fn start_text_selection(
         return true;
     }
 
-    if app.panel == Panel::None && in_result && let Some(result) = &app.last_result {
-        let rect = app.result_rect.unwrap();
-        let idx = byte_index_at_click(result, rect, app.result_scroll, col, row);
-        let (start, end) = selection_bounds_for_click(
-            app, SelectionSource::Result, result, idx, rect.width, clicks, shift, 0,
-        );
-        app.selection = Some(TextSelection {
-            source: SelectionSource::Result,
-            start,
-            end,
-        });
-        app.copy_flash_ticks = 0;
-        return true;
+    if app.panel == Panel::None && in_result {
+        let result_text = app.output_text();
+        if !result_text.is_empty() {
+            let rect = app.result_rect.unwrap();
+            let idx = byte_index_at_click(&result_text, rect, app.result_scroll, col, row);
+            let (start, end) = selection_bounds_for_click(
+                app, SelectionSource::Result, &result_text, idx, rect.width, clicks, shift, 0,
+            );
+            app.selection = Some(TextSelection {
+                source: SelectionSource::Result,
+                start,
+                end,
+            });
+            app.copy_flash_ticks = 0;
+            return true;
+        }
     }
 
     if app.panel == Panel::Files && in_file_content && let Some(content) = app.selected_file.as_ref().and_then(|f| app.orchestrator.file_contents.get(f)) {
@@ -1702,14 +1709,16 @@ fn select_range(text: &str, idx: usize, width: u16, clicks: u8) -> (usize, usize
 
 /// Handle mouse drag: extend the current text selection.
 fn handle_mouse_drag(app: &mut App, col: u16, row: u16) {
+    // Extract result text before mutable borrow of app.selection.
+    let result_text = app.output_text();
     let Some(sel) = &mut app.selection else { return };
     let idx = match sel.source {
         SelectionSource::TaskInput => {
             byte_index_at_click(&app.task_input, app.task_input_rect.unwrap(), app.task_scroll, col, row)
         }
         SelectionSource::Result => {
-            if let Some(result) = &app.last_result {
-                byte_index_at_click(result, app.result_rect.unwrap(), app.result_scroll, col, row)
+            if !result_text.is_empty() {
+                byte_index_at_click(&result_text, app.result_rect.unwrap(), app.result_scroll, col, row)
             } else {
                 return;
             }
@@ -1751,7 +1760,8 @@ fn handle_mouse_up(app: &mut App) {
             let text = match sel.source {
                 SelectionSource::TaskInput => app.task_input[start..end].to_string(),
                 SelectionSource::Result => {
-                    app.last_result.as_ref().map(|r| r[start..end].to_string()).unwrap_or_default()
+                    let output = app.output_text();
+                    output.get(start..end).map(|s| s.to_string()).unwrap_or_default()
                 }
                 SelectionSource::FileContent => {
                     app.selected_file.as_ref()
@@ -1851,12 +1861,15 @@ fn handle_mouse_scroll(
                 app.file_content_scroll = (app.file_content_scroll + delta).min(total.saturating_sub(1));
             }
         }
-    } else if app.panel == Panel::None && in_result && let Some(result) = &app.last_result {
-        let total = wrap_text(result, app.result_rect.map(|r| r.width).unwrap_or(40)).len();
-        if direction < 0 {
-            app.result_scroll = app.result_scroll.saturating_sub(delta);
-        } else {
-            app.result_scroll = (app.result_scroll + delta).min(total.saturating_sub(1));
+    } else if app.panel == Panel::None && in_result {
+        let result_text = app.output_text();
+        if !result_text.is_empty() {
+            let total = wrap_text(&result_text, app.result_rect.map(|r| r.width).unwrap_or(40)).len();
+            if direction < 0 {
+                app.result_scroll = app.result_scroll.saturating_sub(delta);
+            } else {
+                app.result_scroll = (app.result_scroll + delta).min(total.saturating_sub(1));
+            }
         }
     }
 }
@@ -2034,7 +2047,7 @@ mod tests {
         let mut app = App::new();
         app.copy_defer_ticks = 3;
         app.pending_copy_source = Some(SelectionSource::Result);
-        app.last_result = Some("hello world".to_string());
+        app.output_log.push("hello world".to_string());
         app.selection = Some(TextSelection {
             source: SelectionSource::Result,
             start: 0,
@@ -2051,7 +2064,7 @@ mod tests {
         let mut app = App::new();
         app.copy_defer_ticks = 1;
         app.pending_copy_source = Some(SelectionSource::Result);
-        app.last_result = Some("hello world".to_string());
+        app.output_log.push("hello world".to_string());
         app.selection = Some(TextSelection {
             source: SelectionSource::Result,
             start: 0,
@@ -2085,7 +2098,7 @@ mod tests {
         let mut app = App::new();
         app.copy_defer_ticks = 1;
         app.pending_copy_source = Some(SelectionSource::Result);
-        app.last_result = Some("hello world".to_string());
+        app.output_log.push("hello world".to_string());
         // No selection
         app.selection = None;
 
@@ -2101,7 +2114,7 @@ mod tests {
         let mut app = App::new();
         app.copy_defer_ticks = 1;
         app.pending_copy_source = Some(SelectionSource::Result);
-        app.last_result = Some("hello world".to_string());
+        app.output_log.push("hello world".to_string());
         // Selection is for a different source
         app.selection = Some(TextSelection {
             source: SelectionSource::FileContent,
@@ -2122,7 +2135,7 @@ mod tests {
         let mut app = App::new();
         app.copy_defer_ticks = 1;
         app.pending_copy_source = Some(SelectionSource::Result);
-        app.last_result = Some("hello world".to_string());
+        app.output_log.push("hello world".to_string());
         app.selection = Some(TextSelection {
             source: SelectionSource::Result,
             start: 5,
@@ -2271,7 +2284,7 @@ mod tests {
     fn shift_click_different_source_creates_new_selection() {
         let mut app = App::new();
         app.task_input = "hello world".to_string();
-        app.last_result = Some("result text here".to_string());
+        app.output_log.push("result text here".to_string());
         app.task_input_rect = Some(ratatui::layout::Rect::new(0, 0, 40, 10));
         app.result_rect = Some(ratatui::layout::Rect::new(0, 0, 40, 10));
         app.panel = Panel::None;
@@ -2293,7 +2306,7 @@ mod tests {
     #[test]
     fn shift_click_result_area_extends_from_anchor() {
         let mut app = App::new();
-        app.last_result = Some("hello world foo bar".to_string());
+        app.output_log.push("hello world foo bar".to_string());
         app.result_rect = Some(ratatui::layout::Rect::new(0, 0, 40, 10));
         app.panel = Panel::None;
         app.input_focused = true;
