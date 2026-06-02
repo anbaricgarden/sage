@@ -282,8 +282,36 @@ pub fn handle_event(app: &mut App) -> std::io::Result<bool> {
 
 /// Handle a key press. Returns true to continue, false to quit.
 fn handle_key(app: &mut App, code: KeyCode, modifiers: KeyModifiers) -> bool {
-    // Global quit.
+    // Ctrl+C: copy selected text if any, otherwise quit.
     if code == KeyCode::Char('c') && modifiers.contains(KeyModifiers::CONTROL) {
+        if let Some(sel) = app.selection.take() {
+            let (start, end) = (sel.start.min(sel.end), sel.start.max(sel.end));
+            if end > start {
+                let text = match sel.source {
+                    SelectionSource::TaskInput => app.task_input[start..end].to_string(),
+                    SelectionSource::Result => {
+                        app.last_result.as_ref().map(|r| r[start..end].to_string()).unwrap_or_default()
+                    }
+                    SelectionSource::FileContent => {
+                        app.selected_file.as_ref()
+                            .and_then(|f| app.orchestrator.file_contents.get(f))
+                            .map(|c| c[start..end].to_string())
+                            .unwrap_or_default()
+                    }
+                    SelectionSource::FileFilter => app.file_filter[start..end].to_string(),
+                };
+                copy_to_clipboard(&text);
+                app.set_status("Copied to clipboard!", crate::tui::app::StatusKind::Success);
+                app.copy_flash_ticks = 5;
+            }
+            // Restore selection (including zero-width) so the highlight remains visible.
+            app.selection = Some(TextSelection {
+                source: sel.source,
+                start,
+                end,
+            });
+            return true;
+        }
         app.should_quit = true;
         return false;
     }
@@ -317,41 +345,178 @@ fn handle_key(app: &mut App, code: KeyCode, modifiers: KeyModifiers) -> bool {
     true
 }
 
+/// Extend or create a Result-area selection so its active end becomes `new_end`.
+fn extend_result_selection(app: &mut App, anchor: usize, new_end: usize) {
+    if let Some(sel) = app.selection.as_mut().filter(|s| s.source == SelectionSource::Result) {
+        sel.end = new_end;
+    } else {
+        app.selection = Some(TextSelection {
+            source: SelectionSource::Result,
+            start: anchor,
+            end: new_end,
+        });
+    }
+}
+
 fn handle_output_keys(app: &mut App, code: KeyCode, modifiers: KeyModifiers) {
     let ctrl = modifiers.contains(KeyModifiers::CONTROL);
-    match code {
-        KeyCode::Up | KeyCode::Char('k') if !ctrl => {
-            app.result_scroll = app.result_scroll.saturating_sub(3);
-        }
-        KeyCode::Down | KeyCode::Char('j') if !ctrl => {
-            if let Some(result) = &app.last_result {
-                let total = wrap_text(result, app.result_rect.map(|r| r.width).unwrap_or(40)).len();
-                app.result_scroll = (app.result_scroll + 3).min(total.saturating_sub(1));
+    let shift = modifiers.contains(KeyModifiers::SHIFT);
+
+    // Current selection end for the Result area (used as anchor when creating a new selection).
+    let sel_end = app.selection.as_ref()
+        .filter(|s| s.source == SelectionSource::Result)
+        .map(|s| s.end)
+        .unwrap_or(0);
+
+    if let Some(ref text) = app.last_result {
+        let width = app.result_rect.map(|r| r.width).unwrap_or(40);
+        let total_lines = wrap_text(text, width).len();
+        let visible_height = app.result_rect.map(|r| r.height as usize).unwrap_or(1);
+
+        match code {
+            // ── Scroll (no selection change) ──
+            KeyCode::Up | KeyCode::Char('k') if !ctrl && !shift => {
+                app.result_scroll = app.result_scroll.saturating_sub(3);
+                app.selection = None;
+                app.copy_flash_ticks = 0;
             }
-        }
-        KeyCode::PageUp => {
-            app.result_scroll = app.result_scroll.saturating_sub(10);
-        }
-        KeyCode::PageDown => {
-            if let Some(result) = &app.last_result {
-                let total = wrap_text(result, app.result_rect.map(|r| r.width).unwrap_or(40)).len();
-                app.result_scroll = (app.result_scroll + 10).min(total.saturating_sub(1));
+            KeyCode::Down | KeyCode::Char('j') if !ctrl && !shift => {
+                app.result_scroll = (app.result_scroll + 3).min(total_lines.saturating_sub(visible_height));
+                app.selection = None;
+                app.copy_flash_ticks = 0;
             }
-        }
-        KeyCode::Home => app.result_scroll = 0,
-        KeyCode::End => {
-            if let Some(result) = &app.last_result {
-                let total = wrap_text(result, app.result_rect.map(|r| r.width).unwrap_or(40)).len();
-                app.result_scroll = total.saturating_sub(1);
+            KeyCode::PageUp if !shift => {
+                app.result_scroll = app.result_scroll.saturating_sub(10);
+                app.selection = None;
+                app.copy_flash_ticks = 0;
             }
+            KeyCode::PageDown if !shift => {
+                app.result_scroll = (app.result_scroll + 10).min(total_lines.saturating_sub(visible_height));
+                app.selection = None;
+                app.copy_flash_ticks = 0;
+            }
+            KeyCode::Home if !shift => {
+                app.result_scroll = 0;
+                app.selection = None;
+                app.copy_flash_ticks = 0;
+            }
+            KeyCode::End if !shift => {
+                app.result_scroll = total_lines.saturating_sub(visible_height);
+                app.selection = None;
+                app.copy_flash_ticks = 0;
+            }
+
+            // ── Select all ──
+            KeyCode::Char('a') if ctrl && !shift => {
+                app.selection = Some(TextSelection {
+                    source: SelectionSource::Result,
+                    start: 0,
+                    end: text.len(),
+                });
+            }
+
+            // ── Shift+Up: extend selection up one visual line ──
+            KeyCode::Up | KeyCode::Char('k') if shift && !ctrl => {
+                let (row, col) = byte_index_to_visual_pos(text, sel_end, width);
+                let new_end = if row > 0 {
+                    visual_pos_to_byte_index(text, row - 1, col, width)
+                } else {
+                    0
+                };
+                extend_result_selection(app, sel_end, new_end);
+            }
+
+            // ── Shift+Down: extend selection down one visual line ──
+            KeyCode::Down | KeyCode::Char('j') if shift && !ctrl => {
+                let lines = wrap_text(text, width);
+                let (row, col) = byte_index_to_visual_pos(text, sel_end, width);
+                let new_end = if row + 1 < lines.len() {
+                    visual_pos_to_byte_index(text, row + 1, col, width)
+                } else {
+                    text.len()
+                };
+                extend_result_selection(app, sel_end, new_end);
+            }
+
+            // ── Shift+Left: extend selection left one char ──
+            KeyCode::Left if shift && !ctrl => {
+                let new_end = prev_char_boundary(text, sel_end);
+                extend_result_selection(app, sel_end, new_end);
+            }
+
+            // ── Shift+Right: extend selection right one char ──
+            KeyCode::Right if shift && !ctrl => {
+                let new_end = next_char_boundary(text, sel_end);
+                extend_result_selection(app, sel_end, new_end);
+            }
+
+            // ── Ctrl+Shift+Left: extend selection left one word ──
+            KeyCode::Left if ctrl && shift => {
+                let new_end = prev_word_boundary(text, sel_end);
+                extend_result_selection(app, sel_end, new_end);
+            }
+
+            // ── Ctrl+Shift+Right: extend selection right one word ──
+            KeyCode::Right if ctrl && shift => {
+                let new_end = next_word_boundary(text, sel_end);
+                extend_result_selection(app, sel_end, new_end);
+            }
+
+            // ── Shift+Home: extend to start of visual line ──
+            KeyCode::Home if shift && !ctrl => {
+                let (row, _) = byte_index_to_visual_pos(text, sel_end, width);
+                let lines = wrap_text(text, width);
+                let new_end = lines.get(row).map(|(s, _)| *s).unwrap_or(0);
+                extend_result_selection(app, sel_end, new_end);
+            }
+
+            // ── Shift+End: extend to end of visual line ──
+            KeyCode::End if shift && !ctrl => {
+                let (row, _) = byte_index_to_visual_pos(text, sel_end, width);
+                let lines = wrap_text(text, width);
+                let new_end = lines.get(row).map(|(_, e)| *e).unwrap_or(text.len());
+                extend_result_selection(app, sel_end, new_end);
+            }
+
+            // ── Shift+PageUp: extend selection up one page ──
+            KeyCode::PageUp if shift => {
+                let (row, col) = byte_index_to_visual_pos(text, sel_end, width);
+                let target_row = row.saturating_sub(visible_height);
+                let new_end = visual_pos_to_byte_index(text, target_row, col, width);
+                extend_result_selection(app, sel_end, new_end);
+            }
+
+            // ── Shift+PageDown: extend selection down one page ──
+            KeyCode::PageDown if shift => {
+                let (row, col) = byte_index_to_visual_pos(text, sel_end, width);
+                let target_row = (row + visible_height).min(total_lines.saturating_sub(1));
+                let new_end = visual_pos_to_byte_index(text, target_row, col, width);
+                extend_result_selection(app, sel_end, new_end);
+            }
+
+            // ── Focus input ──
+            KeyCode::Char('i') if !ctrl && !shift => {
+                app.input_focused = true;
+            }
+            KeyCode::Esc if !ctrl && !shift => {
+                app.input_focused = true;
+                app.selection = None;
+                app.copy_flash_ticks = 0;
+            }
+
+            _ => {}
         }
-        KeyCode::Char('i') if !ctrl => {
-            app.input_focused = true;
+    } else {
+        // No result: just handle focus changes.
+        match code {
+            KeyCode::Char('i') if !ctrl && !shift => app.input_focused = true,
+            KeyCode::Esc if !ctrl && !shift => {
+                app.input_focused = true;
+                app.selection = None;
+                app.copy_flash_ticks = 0;
+            }
+            _ => {}
         }
-        KeyCode::Esc => {
-            app.input_focused = true;
-        }
-        _ => {}
     }
 }
 

@@ -155,29 +155,19 @@ fn render_output(frame: &mut Frame, app: &mut App, area: Rect) {
         let result_width = inner.width;
         let visible_height = inner.height as usize;
 
-        // Build combined output text (result + history).
-        let mut output_text = result.clone();
-        if !app.orchestrator.history.is_empty() {
-            output_text.push_str("\n\nHistory:\n");
-            for entry in &app.orchestrator.history {
-                output_text.push_str(&format!("  • {}\n", entry));
-            }
-        }
-
-        let total_lines = wrap_text(&output_text, result_width).len();
+        let total_lines = wrap_text(result, result_width).len();
         app.result_scroll = app.result_scroll.min(total_lines.saturating_sub(visible_height));
 
-        // Only apply selection highlight if it falls entirely within the result portion.
         let sel = app
             .selection
             .as_ref()
-            .filter(|s| s.source == SelectionSource::Result && s.end <= result.len())
+            .filter(|s| s.source == SelectionSource::Result)
             .map(|s| (s.start, s.end));
         let flash = app.copy_flash_ticks > 0;
         let select_bg = if flash { SELECT_FLASH_BG } else { SELECT_BG };
 
         let output_lines = lines_with_selection(
-            &output_text,
+            result,
             result_width,
             app.result_scroll,
             visible_height,
@@ -353,9 +343,9 @@ fn render_bottom_bar(frame: &mut Frame, app: &App, area: Rect) {
             let hint = if app.running {
                 "Running..."
             } else if app.panel == Panel::None {
-                "Enter Submit | Shift+Enter Newline | ↑↓ Scroll | Ctrl+F Files | Ctrl+L Logs | Ctrl+, Config | Ctrl+C Quit"
+                "Enter Submit | Shift+Enter Newline | ↑↓ Scroll | Shift+Arrows Select | Ctrl+C Copy/Quit | Ctrl+F Files | Ctrl+L Logs | Ctrl+, Config"
             } else {
-                "Esc Close Panel | Enter Submit | Shift+Enter Newline | Ctrl+C Quit"
+                "Esc Close Panel | Enter Submit | Shift+Enter Newline | Ctrl+C Copy/Quit"
             };
             (hint, TEXT_MUTED)
         }
